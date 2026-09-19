@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function () {
+        try {
+          var originalFetch = typeof window.fetch === 'function' ? window.fetch.bind(window) : window.fetch;
+          var currentFetch = originalFetch;
+
+          // Ensure window.fetch has both a getter and a setter so external scripts or polyfills
+          // attempting to assign window.fetch do not throw "Cannot set property fetch of #<Window> which has only a getter"
+          Object.defineProperty(window, 'fetch', {
+            get: function () {
+              return currentFetch;
+            },
+            set: function (newFetch) {
+              currentFetch = newFetch;
+            },
+            configurable: true,
+            enumerable: true,
+          });
+        } catch (e) {
+          // If property cannot be redefined, suppress the specific uncaught TypeError
+        }
+
+        window.addEventListener('error', function (event) {
+          if (event && event.message && event.message.includes('fetch') && event.message.includes('getter')) {
+            event.preventDefault();
+            return true;
+          }
+        });
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Transport Scolaire - AIN SEBAA</title>
+    <meta name="description" content="Application de gestion de transport scolaire pour École AIN SEBAA : import Excel, affectation équilibrée, listes d'embarquement avec émargement, exports PDF et Excel." />
+    <meta property="og:title" content="Transport Scolaire - AIN SEBAA" />
+    <meta property="og:description" content="Application de gestion de transport scolaire pour École AIN SEBAA : import Excel, affectation équilibrée, listes d'embarquement avec émargement, exports PDF et Excel." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  .font-arabic {
+    font-family: 'Cairo', 'Segoe UI', Tahoma, Arial, sans-serif;
+  }
+}
+
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+
+  /* Masquer la navigation et les barres d'outils à l'impression */
+  header, nav, aside, button, .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 11pt !important;
+  }
+
+  .print-clean {
+    box-shadow: none !important;
+    border: none !important;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Transport Scolaire - AIN SEBAA",
+  "description": "Application de gestion de transport scolaire pour École AIN SEBAA : import Excel, affectation équilibrée, listes d'embarquement avec émargement, exports PDF et Excel.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
