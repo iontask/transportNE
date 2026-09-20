@@ -30,6 +30,8 @@ import {
   ajusterNombreElevesDirect,
   ajusterPourcentageVoyage,
   ajusterTousPourcentagesVoyages,
+  ajusterRemplissageSeuil60OuZero,
+  BilanAjustementSeuil60,
   VOYAGES,
   TransfertOptions,
   getStatsOptimisationVoyage
@@ -48,7 +50,8 @@ import {
   FileJson,
   ShieldCheck,
   Eye,
-  Repeat
+  Repeat,
+  Fuel
 } from 'lucide-react';
 import { AjustementAffectationsModal } from '../components/AjustementAffectationsModal';
 import { CelluleSaisieVoyage } from '../components/CelluleSaisieVoyage';
@@ -57,6 +60,9 @@ import { ModalImpressionRapport } from '../components/ModalImpressionRapport';
 import { ModalConfigurationJSON } from '../components/ModalConfigurationJSON';
 import { ModalSolutionsIANonAffectes } from '../components/ModalSolutionsIANonAffectes';
 import { ModalContinuiteDetails } from '../components/ModalContinuiteDetails';
+import { ModalAjustementSeuil60 } from '../components/ModalAjustementSeuil60';
+import { VoletRecommandationsZonesIA } from '../components/VoletRecommandationsZonesIA';
+import { RecommandationZoneIA } from '../utils/optimisationZonesIA';
 import { exporterRapportRecapitulatifPDF } from '../utils/pdfExport';
 import { ConfigurationTransportJSON } from '../utils/configurationJson';
 import { SolutionIANonAffectes, genererSolutionsIANonAffectes } from '../utils/solutionsIANonAffectes';
@@ -132,6 +138,7 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
   const [isModalConfigOpen, setIsModalConfigOpen] = useState<boolean>(false);
   const [isModalSolutionsIAOpen, setIsModalSolutionsIAOpen] = useState<boolean>(false);
   const [isModalContinuiteOpen, setIsModalContinuiteOpen] = useState<boolean>(false);
+  const [isModalSeuil60Open, setIsModalSeuil60Open] = useState<boolean>(false);
   const [isAppliquantSolutionDirecte, setIsAppliquantSolutionDirecte] = useState<boolean>(false);
   const [isExportingRapportDirectPDF, setIsExportingRapportDirectPDF] = useState<boolean>(false);
 
@@ -276,6 +283,50 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
     } finally {
       setIsAppliquantSolutionDirecte(false);
     }
+  };
+
+  // Application des recommandations du volet IA des zones
+  const handleAppliquerChangementsZonesIA = (
+    nouveauxChauffeurs: Chauffeur[],
+    recommandationsAppliquees: RecommandationZoneIA[]
+  ) => {
+    if (!resultat) return;
+    // Sauvegarder dans l'historique pour pouvoir annuler
+    setHistorique((prev) => [...prev.slice(-9), resultat]);
+
+    // 1. Mettre à jour les chauffeurs persistants
+    if (onUpdateChauffeurs) {
+      onUpdateChauffeurs(nouveauxChauffeurs);
+    }
+
+    // 2. Recalculer la répartition avec les nouveaux chauffeurs et les cibles actuelles
+    const nouveauResultat = repartir(eleves, nouveauxChauffeurs, {
+      pourcentagesCibles: pourcentagesVoyages,
+    });
+
+    // 3. Maximiser la continuité même chauffeur matin & après-midi
+    const affectationsOptimisees = optimiserContinuiteMatinApresMidi(
+      nouveauResultat.affectations,
+      eleves,
+      nouveauxChauffeurs,
+      emplacementsVerrouilles
+    );
+
+    const resultatFinal = construireResultatDepuisAffectations(
+      eleves,
+      nouveauxChauffeurs,
+      affectationsOptimisees
+    );
+
+    onResultat(resultatFinal);
+
+    const nbAjouts = recommandationsAppliquees.filter((r) => r.action === 'AJOUTER').length;
+    const nbRetraits = recommandationsAppliquees.filter((r) => r.action === 'ENLEVER').length;
+
+    afficherFlash(
+      `✨ ${recommandationsAppliquees.length} modification(s) de zones appliquées (${nbAjouts} ajouts, ${nbRetraits} retraits) ! Répartition recalculée : continuité chauffeur et couverture maximisées.`,
+      'success'
+    );
   };
 
   const handleExportRapportDirectPDF = async () => {
@@ -512,6 +563,54 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
         'info'
       );
     }
+  };
+
+  // Option d'ajustement : Mettre tous les voyages sans "SANS" à plus de 60% de remplissage par transport,
+  // sinon le mettre à 0 pour éviter de faire un voyage quasiment vide et gaspiller du carburant
+  const handleAjusterSeuil60OuZero = (ouvrirModal: boolean = false) => {
+    if (!resultat) return;
+    if (ouvrirModal) {
+      setIsModalSeuil60Open(true);
+      return;
+    }
+
+    setHistorique((h) => [...h, resultat]);
+
+    const { nouveauResultat, bilan } = ajusterRemplissageSeuil60OuZero(
+      resultat,
+      eleves,
+      chauffeurs,
+      emplacementsVerrouilles,
+      chauffeursVerrouilles,
+      {
+        seuilRatio: 0.60,
+        strictementSuperieur: true,
+      }
+    );
+
+    onResultat(nouveauResultat);
+
+    if (bilan.totalRotationsEvitees > 0 || bilan.totalElevesReassignes > 0) {
+      afficherFlash(
+        `⛽ Règle >60% ou 0 appliquée : ${bilan.totalRotationsEvitees} voyage(s) quasi-vide(s) mis à 0 (~${bilan.economieCarburantEstimeeLitres} L de carburant épargnés). ${bilan.totalTransportsAuDessus60} transport(s) maintenus au-dessus de 60%.`,
+        'success'
+      );
+    } else {
+      afficherFlash(
+        `✓ Tous les voyages sans mention « SANS » dépassent déjà 60% de remplissage ou sont déjà à 0.`,
+        'info'
+      );
+    }
+  };
+
+  const handleAppliquerBilanSeuil60 = (nouveauResultat: ResultatRepartition, bilan: BilanAjustementSeuil60) => {
+    if (!resultat) return;
+    setHistorique((h) => [...h, resultat]);
+    onResultat(nouveauResultat);
+    afficherFlash(
+      `⛽ Ajustement >60% ou 0 appliqué : ${bilan.totalRotationsEvitees} rotation(s) évitée(s), ~${bilan.economieCarburantEstimeeLitres} L de carburant épargnés.`,
+      'success'
+    );
   };
 
   // Saisie directe d'un chiffre dans la cellule du tableau avec répartition équitable
@@ -955,6 +1054,18 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                     </button>
                     <button
                       type="button"
+                      onClick={() => {
+                        const el = document.getElementById('volet-recommandations-zones-ia');
+                        if (el) el.scrollIntoView({ behavior: 'smooth' });
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-800 text-[11px] font-bold transition-colors cursor-pointer"
+                      title="Ouvrir le volet d'optimisation IA des zones"
+                    >
+                      <Sparkles className="w-3 h-3 text-purple-600" />
+                      Zones IA
+                    </button>
+                    <button
+                      type="button"
                       onClick={handleOptimiserContinuite}
                       className="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-bold transition-colors cursor-pointer"
                       title="Réoptimiser la continuité pour maximiser le même chauffeur"
@@ -1000,6 +1111,27 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                       <span>Recommandations IA</span>
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const el = document.getElementById('volet-recommandations-zones-ia');
+                      if (el) el.scrollIntoView({ behavior: 'smooth' });
+                    }}
+                    className="inline-flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-purple-700 via-indigo-700 to-blue-700 hover:from-purple-800 hover:to-indigo-800 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                    title="Aller au volet d'optimisation et recommandation IA des zones"
+                  >
+                    <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+                    <span>Volet Zones IA</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleAjusterSeuil60OuZero(true)}
+                    className="inline-flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                    title="Option d'ajustement : Mettre les voyages sans la mention 'SANS' à plus de 60% de remplissage par transport, sinon à 0 pour éviter de faire un voyage quasiment vide et gaspiller du carburant"
+                  >
+                    <Fuel className="w-4 h-4 text-emerald-200" />
+                    <span>Remplissage &gt; 60% ou 0</span>
+                  </button>
                   {onNavigateToListesChauffeur && (
                     <button
                       type="button"
@@ -1046,6 +1178,20 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                 </div>
               </div>
 
+              {/* Volet de Recommandation & Optimisation IA des Zones (Ajouts/Retraits en plus de la zone originale) */}
+              <VoletRecommandationsZonesIA
+                eleves={eleves}
+                chauffeurs={chauffeurs}
+                resultat={resultat}
+                emplacementsVerrouilles={emplacementsVerrouilles}
+                pourcentagesVoyages={pourcentagesVoyages}
+                onAppliquerChangementsZones={handleAppliquerChangementsZonesIA}
+                isOpenParDefaut={
+                  resultat.statistiques.elevesNonAffectes.length > 0 ||
+                  (resultat.statistiques.tauxMemeChauffeurMatinApresMidi ?? 100) < 100
+                }
+              />
+
               {/* Taux d'Optimisation en Pourcentage par Voyage (Transports Utilisés vs Places) & Curseurs Manuels */}
               <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -1070,6 +1216,15 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                     >
                       <Zap className="w-3.5 h-3.5 fill-white" />
                       <span>Tous à 100%</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAjusterSeuil60OuZero(true)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-2xs"
+                      title="Mettre tous les voyages sans 'SANS' à plus de 60% par transport, sinon à 0 pour éviter les voyages quasi-vides et le gaspillage de carburant"
+                    >
+                      <Fuel className="w-3.5 h-3.5 text-emerald-200" />
+                      <span>Seuil &gt; 60% ou 0</span>
                     </button>
                     <button
                       type="button"
@@ -1385,6 +1540,16 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                     >
                       <Zap className="w-4 h-4 fill-amber-200 text-amber-200" />
                       <span>Auto-équilibrer les taux</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAjusterSeuil60OuZero(true)}
+                      className="inline-flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                      title="Option d'ajustement : Mettre les voyages sans la mention 'SANS' à plus de 60% de remplissage par transport, sinon à 0 pour ne pas gaspiller de carburant"
+                    >
+                      <Fuel className="w-4 h-4 text-emerald-200" />
+                      <span>Règle &gt; 60% sinon 0 (Carburant)</span>
                     </button>
 
                     <button
@@ -2055,6 +2220,31 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                   onClose={() => setIsModalContinuiteOpen(false)}
                   resultat={resultat}
                   onOptimiserContinuite={handleOptimiserContinuite}
+                />
+              )}
+
+              {/* Modal Ajustement Seuil 60% ou 0 (Économie carburant) */}
+              {resultat && (
+                <ModalAjustementSeuil60
+                  isOpen={isModalSeuil60Open}
+                  onClose={() => setIsModalSeuil60Open(false)}
+                  resultat={resultat}
+                  eleves={eleves}
+                  chauffeurs={chauffeurs}
+                  emplacementsVerrouilles={emplacementsVerrouilles}
+                  chauffeursVerrouilles={chauffeursVerrouilles}
+                  onAppliquerAjustement={handleAppliquerBilanSeuil60}
+                  onAnnulerDernierAjustement={
+                    historique.length > 0
+                      ? () => {
+                          const prev = historique[historique.length - 1];
+                          setHistorique((h) => h.slice(0, -1));
+                          onResultat(prev);
+                          afficherFlash('Annulation effectuée : retour à la répartition précédente.', 'info');
+                        }
+                      : undefined
+                  }
+                  historiqueDisponible={historique.length > 0}
                 />
               )}
             </div>

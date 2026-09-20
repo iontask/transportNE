@@ -205,6 +205,8 @@ export default function App() {
           onAnnulerDernierScenario={handleAnnulerDernierScenario}
           historiqueDisponible={historiqueOptimisation.length > 0}
           onNavigateToRepartition={() => setActiveTab('repartition')}
+          onUpdateChauffeurs={setChauffeurs}
+          onResultat={handleResultat}
         />
       )}
 

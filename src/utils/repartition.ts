@@ -2108,6 +2108,308 @@ export const autoEquilibrerTaux = (
 };
 
 // ============================================================
+// AJUSTEMENT ANTI-GASPILLAGE CARBURANT : SEUIL > 60% OU 0
+// ============================================================
+
+export interface TransportAjustementSeuil60 {
+  chauffeurId: string;
+  chauffeurNom: string;
+  voyageId: string;
+  voyageLibelle: string;
+  placesTotales: number;
+  placesUtilisees: number;
+  tauxPct: number;
+}
+
+export interface TransportMisAZeroSeuil60 {
+  chauffeurId: string;
+  chauffeurNom: string;
+  voyageId: string;
+  voyageLibelle: string;
+  anciensEleves: number;
+  placesTotales: number;
+  ancienTauxPct: number;
+  elevesReassignes: number;
+  elevesNonPlaces: number;
+}
+
+export interface BilanAjustementSeuil60 {
+  transportsAuDessus60: TransportAjustementSeuil60[];
+  transportsMisAZero: TransportMisAZeroSeuil60[];
+  totalTransportsTraites: number;
+  totalTransportsAuDessus60: number;
+  totalRotationsEvitees: number;
+  totalElevesReassignes: number;
+  totalElevesNonPlaces: number;
+  economieCarburantEstimeeLitres: number;
+  economieCO2Kg: number;
+}
+
+/**
+ * Ajuste les affectations pour que TOUT voyage d'un chauffeur sans la mention "SANS"
+ * atteigne un remplissage de plus de 60%, sinon le mette à 0 pour éviter de faire
+ * rouler un transport quasiment vide et gaspiller du carburant.
+ */
+export const ajusterRemplissageSeuil60OuZero = (
+  resultatActuel: ResultatRepartition,
+  eleves: Eleve[],
+  chauffeurs: Chauffeur[],
+  emplacementsVerrouilles: Set<string> | string[] = new Set(),
+  chauffeursVerrouilles: Set<string> | string[] = new Set(),
+  options?: {
+    seuilRatio?: number; // 0.60 par défaut
+    strictementSuperieur?: boolean; // true par défaut (> 60%)
+  }
+): {
+  nouveauResultat: ResultatRepartition;
+  bilan: BilanAjustementSeuil60;
+} => {
+  const seuil = options?.seuilRatio ?? 0.60;
+  const strict = options?.strictementSuperieur ?? true;
+  const setChauffeurs = new Set(chauffeursVerrouilles);
+  const setEmplacements = new Set(emplacementsVerrouilles);
+
+  const chauffeursMap = new Map(chauffeurs.map((c) => [c.id, c]));
+  const elevesMap = new Map(eleves.map((e) => [e.id, e]));
+
+  let affectationsCourantes = [...resultatActuel.affectations];
+
+  const transportsAuDessus60: TransportAjustementSeuil60[] = [];
+  const transportsMisAZero: TransportMisAZeroSeuil60[] = [];
+  let totalElevesReassignes = 0;
+  let totalElevesNonPlaces = 0;
+
+  const testSatisfaitSeuil = (placesOccupees: number, placesTotales: number): boolean => {
+    if (placesTotales <= 0 || placesOccupees <= 0) return false;
+    const ratio = placesOccupees / placesTotales;
+    return strict ? ratio > seuil : ratio >= seuil;
+  };
+
+  VOYAGES.forEach((voyage) => {
+    const voyageId = voyage.id;
+
+    // 1. Filtrer les chauffeurs actifs pour ce voyage (SANS la mention "SANS" et non verrouillés)
+    const chauffeursActifs = chauffeurs.filter((c) => {
+      if (estVoyageSans(c, voyageId)) return false;
+      if (estEmplacementVerrouille(c.id, voyageId, setChauffeurs, setEmplacements)) return false;
+      return true;
+    });
+
+    if (chauffeursActifs.length === 0) return;
+
+    const getPlacesChauffeur = (chId: string) =>
+      affectationsCourantes.filter((a) => a.chauffeurId === chId && a.voyageId === voyageId).length;
+
+    // Identifier les élèves disponibles pour ce voyage (non encore assignés sur ce créneau)
+    const elevesDejaAssignesMatin = new Set(
+      affectationsCourantes.filter((a) => a.voyageId === 'MATIN_1' || a.voyageId === 'MATIN_2').map((a) => a.eleveId)
+    );
+    const elevesDejaAssignesApresMidi = new Set(
+      affectationsCourantes.filter((a) => a.voyageId === 'APRES_MIDI_15H15' || a.voyageId === 'APRES_MIDI_16H00').map((a) => a.eleveId)
+    );
+
+    let nonAssignesVoyage = eleves.filter((e) => {
+      if (voyageId === 'MATIN_1' || voyageId === 'MATIN_2') {
+        return !elevesDejaAssignesMatin.has(e.id);
+      }
+      if (voyageId === 'APRES_MIDI_15H15') {
+        return e.niveau === 1 && !elevesDejaAssignesApresMidi.has(e.id);
+      }
+      if (voyageId === 'APRES_MIDI_16H00') {
+        return e.niveau === 2 && !elevesDejaAssignesApresMidi.has(e.id);
+      }
+      return false;
+    });
+
+    // ÉTAPE A : Élever les chauffeurs proches de > 60% avec des élèves non assignés compatibles
+    chauffeursActifs.forEach((c) => {
+      let nbOcc = getPlacesChauffeur(c.id);
+      if (nbOcc > 0 && !testSatisfaitSeuil(nbOcc, c.places)) {
+        const placesCible = Math.ceil(c.places * (strict ? (seuil + 0.001) : seuil));
+        const besoin = placesCible - nbOcc;
+        if (besoin > 0 && besoin <= (c.places - nbOcc)) {
+          const compatibles = nonAssignesVoyage.filter((el) =>
+            chauffeurPeutTransporterEleve(c, el, voyageId)
+          );
+          if (compatibles.length >= besoin) {
+            const ajouts = compatibles.slice(0, besoin);
+            ajouts.forEach((el) => {
+              affectationsCourantes.push({
+                eleveId: el.id,
+                chauffeurId: c.id,
+                voyageId,
+              });
+              totalElevesReassignes++;
+            });
+            const idsAjoutes = new Set(ajouts.map((el) => el.id));
+            nonAssignesVoyage = nonAssignesVoyage.filter((el) => !idsAjoutes.has(el.id));
+          }
+        }
+      }
+    });
+
+    // ÉTAPE B : Consolidation inter-chauffeurs au sein de la zone
+    // Transférer des élèves vers les chauffeurs qui peuvent dépasser 60%
+    const chauffeursSousSeuil = chauffeursActifs.filter((c) => {
+      const nb = getPlacesChauffeur(c.id);
+      return nb > 0 && !testSatisfaitSeuil(nb, c.places);
+    });
+    chauffeursSousSeuil.sort((a, b) => getPlacesChauffeur(b.id) - getPlacesChauffeur(a.id));
+
+    chauffeursSousSeuil.forEach((chReceveur) => {
+      let nbReceveur = getPlacesChauffeur(chReceveur.id);
+      if (testSatisfaitSeuil(nbReceveur, chReceveur.places)) return;
+
+      const nbCible = Math.ceil(chReceveur.places * (strict ? (seuil + 0.001) : seuil));
+      const besoin = nbCible - nbReceveur;
+      if (besoin <= 0 || (chReceveur.places - nbReceveur) < besoin) return;
+
+      for (const chDonateur of chauffeursActifs) {
+        if (chDonateur.id === chReceveur.id) continue;
+        const nbDonateur = getPlacesChauffeur(chDonateur.id);
+        const margeDonateur = testSatisfaitSeuil(nbDonateur, chDonateur.places)
+          ? nbDonateur - Math.ceil(chDonateur.places * (strict ? (seuil + 0.001) : seuil))
+          : nbDonateur;
+
+        if (margeDonateur <= 0) continue;
+
+        const affsDonateur = affectationsCourantes.filter(
+          (a) => a.chauffeurId === chDonateur.id && a.voyageId === voyageId
+        );
+        const compatibles = affsDonateur.filter((a) => {
+          const el = elevesMap.get(a.eleveId);
+          return el && chauffeurPeutTransporterEleve(chReceveur, el, voyageId);
+        });
+
+        const transfertPossible = Math.min(besoin, margeDonateur, compatibles.length);
+        if (transfertPossible > 0) {
+          const aTransferer = compatibles.slice(0, transfertPossible);
+          const idsTransferes = new Set(aTransferer.map((a) => a.eleveId));
+
+          affectationsCourantes = affectationsCourantes.map((aff) => {
+            if (aff.voyageId === voyageId && aff.chauffeurId === chDonateur.id && idsTransferes.has(aff.eleveId)) {
+              return { ...aff, chauffeurId: chReceveur.id };
+            }
+            return aff;
+          });
+
+          totalElevesReassignes += transfertPossible;
+          nbReceveur += transfertPossible;
+          if (testSatisfaitSeuil(nbReceveur, chReceveur.places)) break;
+        }
+      }
+    });
+
+    // ÉTAPE C : APPLICATION STRICTE DU SEUIL > 60% OU 0
+    // Pour chaque chauffeur sans mention "SANS" :
+    // - S'il est > 60% : maintenu et comptabilisé
+    // - S'il est à 0 : pas de gaspillage
+    // - S'il est entre 1 et <= 60% : le mettre à 0 (réaffecter ses élèves aux autres bus compatibles ou les libérer)
+    chauffeursActifs.forEach((ch) => {
+      const placesOccupees = getPlacesChauffeur(ch.id);
+
+      if (placesOccupees === 0) {
+        return; // Déjà à 0, ne consomme pas de carburant
+      }
+
+      if (testSatisfaitSeuil(placesOccupees, ch.places)) {
+        transportsAuDessus60.push({
+          chauffeurId: ch.id,
+          chauffeurNom: ch.nom,
+          voyageId,
+          voyageLibelle: voyage.libelle,
+          placesTotales: ch.places,
+          placesUtilisees: placesOccupees,
+          tauxPct: Math.round((placesOccupees / ch.places) * 100),
+        });
+        return;
+      }
+
+      // Le transport est sous le seuil de 60% : on le met à 0
+      const affsChauffeur = affectationsCourantes.filter(
+        (a) => a.chauffeurId === ch.id && a.voyageId === voyageId
+      );
+      const nbAnciens = affsChauffeur.length;
+      const ancienTaux = Math.round((nbAnciens / ch.places) * 100);
+
+      let nbReassignes = 0;
+      let nbNonPlaces = 0;
+
+      affsChauffeur.forEach((aff) => {
+        const el = elevesMap.get(aff.eleveId);
+        let assigneAutre = false;
+
+        if (el) {
+          // Chercher un autre chauffeur actif ayant de la place disponible
+          const autresCandidats = chauffeursActifs
+            .filter((autre) => autre.id !== ch.id)
+            .sort((a, b) => getPlacesChauffeur(b.id) - getPlacesChauffeur(a.id));
+
+          for (const autre of autresCandidats) {
+            const occAutre = getPlacesChauffeur(autre.id);
+            if (occAutre < autre.places && chauffeurPeutTransporterEleve(autre, el, voyageId)) {
+              affectationsCourantes = affectationsCourantes.map((a) =>
+                a.eleveId === el.id && a.voyageId === voyageId
+                  ? { ...a, chauffeurId: autre.id }
+                  : a
+              );
+              nbReassignes++;
+              totalElevesReassignes++;
+              assigneAutre = true;
+              break;
+            }
+          }
+        }
+
+        if (!assigneAutre) {
+          // Retirer l'affectation sur ce voyage pour ramener le transport à 0
+          affectationsCourantes = affectationsCourantes.filter(
+            (a) => !(a.eleveId === aff.eleveId && a.voyageId === voyageId)
+          );
+          nbNonPlaces++;
+          totalElevesNonPlaces++;
+        }
+      });
+
+      transportsMisAZero.push({
+        chauffeurId: ch.id,
+        chauffeurNom: ch.nom,
+        voyageId,
+        voyageLibelle: voyage.libelle,
+        anciensEleves: nbAnciens,
+        placesTotales: ch.places,
+        ancienTauxPct: ancienTaux,
+        elevesReassignes: nbReassignes,
+        elevesNonPlaces: nbNonPlaces,
+      });
+    });
+  });
+
+  const nouveauResultat = construireResultatDepuisAffectations(eleves, chauffeurs, affectationsCourantes);
+
+  // Estimation des économies :
+  // 1 rotation évitée = ~14 km évités = ~2.52 L de carburant épargné (base 18L/100km)
+  // Facteur d'émission CO2 diesel : 2.67 kg CO2 / L
+  const totalRotationsEvitees = transportsMisAZero.length;
+  const economieCarburantEstimeeLitres = Math.round(totalRotationsEvitees * 2.52 * 10) / 10;
+  const economieCO2Kg = Math.round(economieCarburantEstimeeLitres * 2.67 * 10) / 10;
+
+  const bilan: BilanAjustementSeuil60 = {
+    transportsAuDessus60,
+    transportsMisAZero,
+    totalTransportsTraites: transportsAuDessus60.length + transportsMisAZero.length,
+    totalTransportsAuDessus60: transportsAuDessus60.length,
+    totalRotationsEvitees,
+    totalElevesReassignes,
+    totalElevesNonPlaces,
+    economieCarburantEstimeeLitres,
+    economieCO2Kg,
+  };
+
+  return { nouveauResultat, bilan };
+};
+
+// ============================================================
 // FONCTIONS D'EXPORT & REQUÊTES
 // ============================================================
 

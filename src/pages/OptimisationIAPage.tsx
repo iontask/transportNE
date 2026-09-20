@@ -27,6 +27,10 @@ import {
   calculerMetriquesRepartition,
   genererScenariosOptimisation 
 } from '../utils/optimisationScenarios';
+import { VoletRecommandationsZonesIA } from '../components/VoletRecommandationsZonesIA';
+import { RecommandationZoneIA } from '../utils/optimisationZonesIA';
+import { repartir, optimiserContinuiteMatinApresMidi, construireResultatDepuisAffectations, BilanAjustementSeuil60 } from '../utils/repartition';
+import { ModalAjustementSeuil60 } from '../components/ModalAjustementSeuil60';
 
 interface OptimisationIAPageProps {
   eleves: Eleve[];
@@ -38,6 +42,8 @@ interface OptimisationIAPageProps {
   onAnnulerDernierScenario?: () => void;
   historiqueDisponible?: boolean;
   onNavigateToRepartition: () => void;
+  onUpdateChauffeurs?: (chauffeurs: Chauffeur[]) => void;
+  onResultat?: (resultat: ResultatRepartition) => void;
 }
 
 export const OptimisationIAPage: React.FC<OptimisationIAPageProps> = ({
@@ -50,6 +56,8 @@ export const OptimisationIAPage: React.FC<OptimisationIAPageProps> = ({
   onAnnulerDernierScenario,
   historiqueDisponible = false,
   onNavigateToRepartition,
+  onUpdateChauffeurs,
+  onResultat,
 }) => {
   const [scenarios, setScenarios] = useState<ScenarioOptimisation[]>([]);
   const [analyseGlobale, setAnalyseGlobale] = useState<string>('');
@@ -59,6 +67,55 @@ export const OptimisationIAPage: React.FC<OptimisationIAPageProps> = ({
   const [scenarioSelectionneId, setScenarioSelectionneId] = useState<string>('carburant');
   const [scenarioAppliqueId, setScenarioAppliqueId] = useState<string | null>(null);
   const [messageSucces, setMessageSucces] = useState<string | null>(null);
+  const [isModalSeuil60Open, setIsModalSeuil60Open] = useState<boolean>(false);
+
+  const handleAppliquerAjustementSeuil60 = (
+    nouveauResultat: ResultatRepartition,
+    bilan: BilanAjustementSeuil60
+  ) => {
+    onAppliquerScenario(
+      nouveauResultat,
+      `Ajustement Seuil > 60% ou 0 (${bilan.totalRotationsEvitees} rotations évitées, ~${bilan.economieCarburantEstimeeLitres}L économisés)`
+    );
+    setMessageSucces(
+      `Règle >60% ou 0 appliquée : ${bilan.totalRotationsEvitees} rotation(s) quasi-vide(s) mise(s) à 0, ~${bilan.economieCarburantEstimeeLitres} L de carburant épargnés !`
+    );
+  };
+
+  const handleAppliquerChangementsZones = (
+    nouveauxChauffeurs: Chauffeur[],
+    recommandationsAppliquees: RecommandationZoneIA[]
+  ) => {
+    if (!resultat) return;
+    if (onUpdateChauffeurs) {
+      onUpdateChauffeurs(nouveauxChauffeurs);
+    }
+    const nouveauResultat = repartir(eleves, nouveauxChauffeurs);
+    const affectationsOptimisees = optimiserContinuiteMatinApresMidi(
+      nouveauResultat.affectations,
+      eleves,
+      nouveauxChauffeurs,
+      emplacementsVerrouilles
+    );
+    const resultatFinal = construireResultatDepuisAffectations(
+      eleves,
+      nouveauxChauffeurs,
+      affectationsOptimisees
+    );
+
+    if (onResultat) {
+      onResultat(resultatFinal);
+    } else {
+      onAppliquerScenario(resultatFinal, 'Ajustement stratégique des zones IA');
+    }
+
+    const nbAjouts = recommandationsAppliquees.filter((r) => r.action === 'AJOUTER').length;
+    const nbRetraits = recommandationsAppliquees.filter((r) => r.action === 'ENLEVER').length;
+
+    setMessageSucces(
+      `✓ ${recommandationsAppliquees.length} modification(s) de zones appliquées (${nbAjouts} ajouts, ${nbRetraits} retraits) ! Couverture élèves et continuité chauffeur recalculées.`
+    );
+  };
 
   // Charger les recommandations via l'API serveur ou le moteur local
   const chargerRecommandations = async () => {
@@ -187,6 +244,15 @@ export const OptimisationIAPage: React.FC<OptimisationIAPageProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5 shrink-0">
+          <button
+            onClick={() => setIsModalSeuil60Open(true)}
+            className="inline-flex items-center gap-2 px-3.5 py-2 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 hover:from-emerald-700 hover:to-teal-700 text-white rounded-xl text-xs font-bold transition-all shadow-sm cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+            title="Ajustement anti-gaspillage : Mettre les voyages sans la mention 'SANS' à plus de 60% de remplissage par transport, sinon à 0 pour économiser le carburant"
+          >
+            <Fuel className="w-3.5 h-3.5 text-emerald-200" />
+            <span>Règle &gt; 60% sinon 0</span>
+          </button>
+
           {historiqueDisponible && onAnnulerDernierScenario && (
             <button
               onClick={onAnnulerDernierScenario}
@@ -256,6 +322,18 @@ export const OptimisationIAPage: React.FC<OptimisationIAPageProps> = ({
           )}
         </div>
       </div>
+
+      {/* Volet Recommandation et Optimisation IA des Zones */}
+      {resultat && (
+        <VoletRecommandationsZonesIA
+          eleves={eleves}
+          chauffeurs={chauffeurs}
+          resultat={resultat}
+          emplacementsVerrouilles={emplacementsVerrouilles}
+          onAppliquerChangementsZones={handleAppliquerChangementsZones}
+          isOpenParDefaut={true}
+        />
+      )}
 
       {/* Cartes d'Indicateurs Actuels */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -541,6 +619,22 @@ export const OptimisationIAPage: React.FC<OptimisationIAPageProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal Ajustement Seuil > 60% ou 0 (Carburant) */}
+      {resultat && (
+        <ModalAjustementSeuil60
+          isOpen={isModalSeuil60Open}
+          onClose={() => setIsModalSeuil60Open(false)}
+          resultat={resultat}
+          eleves={eleves}
+          chauffeurs={chauffeurs}
+          emplacementsVerrouilles={emplacementsVerrouilles}
+          chauffeursVerrouilles={chauffeursVerrouilles}
+          onAppliquerAjustement={handleAppliquerAjustementSeuil60}
+          onAnnulerDernierAjustement={onAnnulerDernierScenario}
+          historiqueDisponible={historiqueDisponible}
+        />
       )}
     </div>
   );
