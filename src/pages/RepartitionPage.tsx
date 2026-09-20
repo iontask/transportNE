@@ -603,12 +603,24 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
     }
   };
 
-  const handleAppliquerBilanSeuil60 = (nouveauResultat: ResultatRepartition, bilan: BilanAjustementSeuil60) => {
+  const handleAppliquerBilanSeuil60 = (
+    nouveauResultat: ResultatRepartition,
+    bilan: BilanAjustementSeuil60,
+    nouveauxChauffeurs?: Chauffeur[]
+  ) => {
     if (!resultat) return;
     setHistorique((h) => [...h, resultat]);
+    if (nouveauxChauffeurs && nouveauxChauffeurs.length > 0 && onUpdateChauffeurs) {
+      onUpdateChauffeurs(nouveauxChauffeurs);
+    }
     onResultat(nouveauResultat);
+
+    const nbSauves = bilan.transportsSauvesParZoneCommune?.length || 0;
+    const sauvMsg = nbSauves > 0
+      ? ` (${nbSauves} sauvé(s) via zone commune ${bilan.zoneCommune?.toUpperCase() || 'AÏN SEBAÂ'})`
+      : '';
     afficherFlash(
-      `⛽ Ajustement >60% ou 0 appliqué : ${bilan.totalRotationsEvitees} rotation(s) évitée(s), ~${bilan.economieCarburantEstimeeLitres} L de carburant épargnés.`,
+      `⛽ Ajustement >60% ou 0 appliqué : ${bilan.totalRotationsEvitees} rotation(s) évitée(s)${sauvMsg}, ~${bilan.economieCarburantEstimeeLitres} L de carburant épargnés.`,
       'success'
     );
   };

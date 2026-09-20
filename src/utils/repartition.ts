@@ -2133,9 +2133,98 @@ export interface TransportMisAZeroSeuil60 {
   elevesNonPlaces: number;
 }
 
+export interface ZoneInfo {
+  nom: string;
+  libelle: string;
+  countEleves: number;
+  countChauffeurs: number;
+  isEcoleDefault: boolean;
+}
+
+/**
+ * Récupère la liste de toutes les zones distinctes des élèves et des chauffeurs,
+ * avec priorité pour la zone principale (AIN SEBAA).
+ */
+export const obtenirToutesLesZonesDisponibles = (
+  eleves: Eleve[],
+  chauffeurs: Chauffeur[]
+): ZoneInfo[] => {
+  const zonesMap = new Map<string, ZoneInfo>();
+
+  const ecoleNorm = normaliserNomZone(ZONE_ECOLE);
+  zonesMap.set(ecoleNorm, {
+    nom: ecoleNorm,
+    libelle: 'AIN SEBAA',
+    countEleves: 0,
+    countChauffeurs: 0,
+    isEcoleDefault: true,
+  });
+
+  eleves.forEach((e) => {
+    const zNorm = normaliserNomZone(e.zone);
+    if (!zNorm) return;
+    const existing = zonesMap.get(zNorm);
+    if (existing) {
+      existing.countEleves += 1;
+    } else {
+      zonesMap.set(zNorm, {
+        nom: zNorm,
+        libelle: e.zone.trim().toUpperCase(),
+        countEleves: 1,
+        countChauffeurs: 0,
+        isEcoleDefault: zNorm === ecoleNorm,
+      });
+    }
+  });
+
+  chauffeurs.forEach((c) => {
+    const zonesC = obtenirZonesChauffeur(c);
+    zonesC.forEach((z) => {
+      const zNorm = normaliserNomZone(z);
+      if (!zNorm) return;
+      const existing = zonesMap.get(zNorm);
+      if (existing) {
+        existing.countChauffeurs += 1;
+      } else {
+        zonesMap.set(zNorm, {
+          nom: zNorm,
+          libelle: z.trim().toUpperCase(),
+          countEleves: 0,
+          countChauffeurs: 1,
+          isEcoleDefault: zNorm === ecoleNorm,
+        });
+      }
+    });
+  });
+
+  const list = Array.from(zonesMap.values());
+  list.sort((a, b) => {
+    if (a.isEcoleDefault && !b.isEcoleDefault) return -1;
+    if (!a.isEcoleDefault && b.isEcoleDefault) return 1;
+    return b.countEleves - a.countEleves;
+  });
+
+  return list;
+};
+
+export interface TransportSauveZoneCommuneSeuil60 {
+  chauffeurId: string;
+  chauffeurNom: string;
+  voyageId: string;
+  voyageLibelle: string;
+  placesTotales: number;
+  placesOccupeesAvant: number;
+  placesOccupeesApres: number;
+  tauxFinalPct: number;
+  elevesAjoutesZoneCommune: number;
+  zoneCommune: string;
+  nbZonesFinales: number;
+}
+
 export interface BilanAjustementSeuil60 {
   transportsAuDessus60: TransportAjustementSeuil60[];
   transportsMisAZero: TransportMisAZeroSeuil60[];
+  transportsSauvesParZoneCommune: TransportSauveZoneCommuneSeuil60[];
   totalTransportsTraites: number;
   totalTransportsAuDessus60: number;
   totalRotationsEvitees: number;
@@ -2143,12 +2232,24 @@ export interface BilanAjustementSeuil60 {
   totalElevesNonPlaces: number;
   economieCarburantEstimeeLitres: number;
   economieCO2Kg: number;
+  maxZonesParChauffeur?: number;
+  zoneCommune?: string;
+  nouveauxChauffeurs?: Chauffeur[];
+}
+
+export interface OptionsAjustementSeuil60 {
+  seuilRatio?: number; // 0.60 par défaut
+  strictementSuperieur?: boolean; // true par défaut (> 60%)
+  maxZonesParChauffeur?: number; // Plafond max de zones par chauffeur (ex: 2 ou 3)
+  zoneCommune?: string | null; // Zone commune sélectionnée (ex: 'ain sebaa')
+  autoriserExtensionZoneCommune?: boolean; // true par défaut
 }
 
 /**
  * Ajuste les affectations pour que TOUT voyage d'un chauffeur sans la mention "SANS"
  * atteigne un remplissage de plus de 60%, sinon le mette à 0 pour éviter de faire
  * rouler un transport quasiment vide et gaspiller du carburant.
+ * Intègre un paramètre de limite MAX de zones par chauffeur et l'usage d'une ZONE COMMUNE (ex: Aïn Sebaâ).
  */
 export const ajusterRemplissageSeuil60OuZero = (
   resultatActuel: ResultatRepartition,
@@ -2156,26 +2257,31 @@ export const ajusterRemplissageSeuil60OuZero = (
   chauffeurs: Chauffeur[],
   emplacementsVerrouilles: Set<string> | string[] = new Set(),
   chauffeursVerrouilles: Set<string> | string[] = new Set(),
-  options?: {
-    seuilRatio?: number; // 0.60 par défaut
-    strictementSuperieur?: boolean; // true par défaut (> 60%)
-  }
+  options?: OptionsAjustementSeuil60
 ): {
   nouveauResultat: ResultatRepartition;
   bilan: BilanAjustementSeuil60;
 } => {
   const seuil = options?.seuilRatio ?? 0.60;
   const strict = options?.strictementSuperieur ?? true;
+  const maxZones = options?.maxZonesParChauffeur ?? 3;
+  const zoneCommuneChoisie = options?.zoneCommune ? normaliserNomZone(options.zoneCommune) : null;
+  const autoriserExtension = options?.autoriserExtensionZoneCommune ?? true;
+
   const setChauffeurs = new Set(chauffeursVerrouilles);
   const setEmplacements = new Set(emplacementsVerrouilles);
 
-  const chauffeursMap = new Map(chauffeurs.map((c) => [c.id, c]));
+  // Cloner les chauffeurs pour enregistrer d'éventuels ajouts de zone commune
+  const chauffeursModifiesMap = new Map<string, Chauffeur>(
+    chauffeurs.map((c) => [c.id, { ...c }])
+  );
   const elevesMap = new Map(eleves.map((e) => [e.id, e]));
 
   let affectationsCourantes = [...resultatActuel.affectations];
 
   const transportsAuDessus60: TransportAjustementSeuil60[] = [];
   const transportsMisAZero: TransportMisAZeroSeuil60[] = [];
+  const transportsSauvesParZoneCommune: TransportSauveZoneCommuneSeuil60[] = [];
   let totalElevesReassignes = 0;
   let totalElevesNonPlaces = 0;
 
@@ -2300,6 +2406,100 @@ export const ajusterRemplissageSeuil60OuZero = (
       }
     });
 
+    // ÉTAPE B.2 : EXTENSION VERS LA ZONE COMMUNE DANS LA LIMITE DU MAX DE ZONES
+    // Si un chauffeur est sous le seuil de 60%, et qu'une zone commune est sélectionnée (ex: Aïn Sebaâ) :
+    // S'il n'a pas dépassé son nombre maximum de zones autorisées, il peut intégrer la zone commune
+    // et récupérer des élèves disponibles de cette zone pour hisser son remplissage au-dessus de 60%
+    // et éviter ainsi d'être annulé ou mis à 0.
+    if (autoriserExtension && zoneCommuneChoisie) {
+      chauffeursActifs.forEach((ch) => {
+        let nbOcc = getPlacesChauffeur(ch.id);
+        if (nbOcc === 0 || testSatisfaitSeuil(nbOcc, ch.places)) return;
+
+        const chModif = chauffeursModifiesMap.get(ch.id) || { ...ch };
+        const zonesActuelles = obtenirZonesVoyageChauffeur(chModif, voyageId).map(normaliserNomZone);
+        const aDejaCommune = zonesActuelles.includes(zoneCommuneChoisie);
+
+        // Vérification stricte du plafond : le chauffeur ne doit PAS dépasser maxZones
+        if (!aDejaCommune && zonesActuelles.length >= maxZones) {
+          return; // Plafond max de zones déjà atteint pour ce chauffeur
+        }
+
+        const placesCible = Math.ceil(ch.places * (strict ? seuil + 0.001 : seuil));
+        const besoin = placesCible - nbOcc;
+        const placesDispo = ch.places - nbOcc;
+
+        if (besoin <= 0 || placesDispo < besoin) return;
+
+        // Rechercher les élèves disponibles de la zone commune pour ce créneau
+        const configVoyage = getConfigVoyage(chModif, voyageId);
+        const niveauxChauffeur = extraireNiveaux(configVoyage);
+
+        const elevesCommuneCompatibles = nonAssignesVoyage.filter((el) => {
+          if (normaliserNomZone(el.zone) !== zoneCommuneChoisie) return false;
+          if (niveauxChauffeur.length > 0 && !niveauxChauffeur.includes(el.niveau)) return false;
+          if (voyageId === 'APRES_MIDI_15H15' && el.niveau !== 1) return false;
+          if (voyageId === 'APRES_MIDI_16H00' && el.niveau !== 2) return false;
+          return true;
+        });
+
+        // Si on a suffisamment d'élèves pour faire franchir le seuil des 60%
+        if (elevesCommuneCompatibles.length >= besoin) {
+          const aPrendre = Math.min(placesDispo, Math.max(besoin, Math.min(elevesCommuneCompatibles.length, placesCible - nbOcc)));
+          const selectionEleves = elevesCommuneCompatibles.slice(0, aPrendre);
+
+          selectionEleves.forEach((el) => {
+            affectationsCourantes.push({
+              eleveId: el.id,
+              chauffeurId: ch.id,
+              voyageId,
+            });
+            totalElevesReassignes++;
+          });
+
+          const idsPris = new Set(selectionEleves.map((el) => el.id));
+          nonAssignesVoyage = nonAssignesVoyage.filter((el) => !idsPris.has(el.id));
+
+          // Mettre à jour la configuration du chauffeur pour intégrer la zone commune
+          const zonesBrutesActuelles = obtenirZonesVoyageChauffeur(chModif, voyageId);
+          let newZones = [...zonesBrutesActuelles];
+          if (!aDejaCommune) {
+            // Ajouter le libellé de la zone commune
+            const libelleCommune = options?.zoneCommune || zoneCommuneChoisie.toUpperCase();
+            newZones = Array.from(new Set([...zonesBrutesActuelles, libelleCommune]));
+          }
+
+          const vKey = VOYAGE_ID_TO_KEY[voyageId] || voyageId;
+          chModif.zonesParVoyage = {
+            ...(chModif.zonesParVoyage || {}),
+            [voyageId]: newZones,
+            [vKey]: newZones,
+          };
+          if (voyageId === 'MATIN_1') chModif.zonesVoyageMatin1 = newZones;
+          if (voyageId === 'MATIN_2') chModif.zonesVoyageMatin2 = newZones;
+          if (voyageId === 'APRES_MIDI_15H15') chModif.zonesVoyageApresMidi15h15 = newZones;
+          if (voyageId === 'APRES_MIDI_16H00') chModif.zonesVoyageApresMidi16h00 = newZones;
+
+          chauffeursModifiesMap.set(ch.id, chModif);
+
+          const nbOccFinal = getPlacesChauffeur(ch.id);
+          transportsSauvesParZoneCommune.push({
+            chauffeurId: ch.id,
+            chauffeurNom: ch.nom,
+            voyageId,
+            voyageLibelle: voyage.libelle,
+            placesTotales: ch.places,
+            placesOccupeesAvant: nbOcc,
+            placesOccupeesApres: nbOccFinal,
+            tauxFinalPct: Math.round((nbOccFinal / ch.places) * 100),
+            elevesAjoutesZoneCommune: selectionEleves.length,
+            zoneCommune: options?.zoneCommune || zoneCommuneChoisie.toUpperCase(),
+            nbZonesFinales: newZones.length,
+          });
+        }
+      });
+    }
+
     // ÉTAPE C : APPLICATION STRICTE DU SEUIL > 60% OU 0
     // Pour chaque chauffeur sans mention "SANS" :
     // - S'il est > 60% : maintenu et comptabilisé
@@ -2385,7 +2585,8 @@ export const ajusterRemplissageSeuil60OuZero = (
     });
   });
 
-  const nouveauResultat = construireResultatDepuisAffectations(eleves, chauffeurs, affectationsCourantes);
+  const chauffeursFinaux = Array.from(chauffeursModifiesMap.values());
+  const nouveauResultat = construireResultatDepuisAffectations(eleves, chauffeursFinaux, affectationsCourantes);
 
   // Estimation des économies :
   // 1 rotation évitée = ~14 km évités = ~2.52 L de carburant épargné (base 18L/100km)
@@ -2397,6 +2598,7 @@ export const ajusterRemplissageSeuil60OuZero = (
   const bilan: BilanAjustementSeuil60 = {
     transportsAuDessus60,
     transportsMisAZero,
+    transportsSauvesParZoneCommune,
     totalTransportsTraites: transportsAuDessus60.length + transportsMisAZero.length,
     totalTransportsAuDessus60: transportsAuDessus60.length,
     totalRotationsEvitees,
@@ -2404,6 +2606,9 @@ export const ajusterRemplissageSeuil60OuZero = (
     totalElevesNonPlaces,
     economieCarburantEstimeeLitres,
     economieCO2Kg,
+    maxZonesParChauffeur: maxZones,
+    zoneCommune: options?.zoneCommune || undefined,
+    nouveauxChauffeurs: chauffeursFinaux,
   };
 
   return { nouveauResultat, bilan };

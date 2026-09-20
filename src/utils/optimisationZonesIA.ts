@@ -37,6 +37,14 @@ export interface RecommandationZoneIA {
     placesLibresActuelles: number;
   };
   selectionnee: boolean;
+  isZoneCommune?: boolean;
+  seuil60Concerne?: boolean;
+}
+
+export interface OptionsAnalyseZonesIA {
+  maxZonesParChauffeur?: number; // default 3
+  zoneCommune?: string; // default 'ain sebaa'
+  seuilRemplissageCible?: number; // default 0.60
 }
 
 export interface AnalyseZonesIAResultat {
@@ -85,8 +93,13 @@ export function analyserEtRecommanderZonesIA(
   eleves: Eleve[],
   chauffeurs: Chauffeur[],
   resultat: ResultatRepartition,
-  emplacementsVerrouilles: Set<string> | string[] = new Set()
+  emplacementsVerrouilles: Set<string> | string[] = new Set(),
+  options?: OptionsAnalyseZonesIA
 ): AnalyseZonesIAResultat {
+  const maxZones = options?.maxZonesParChauffeur ?? 3;
+  const zoneCommuneNorm = options?.zoneCommune ? normaliserNomZone(options.zoneCommune) : 'ain sebaa';
+  const seuilCible = options?.seuilRemplissageCible ?? 0.60;
+
   const setVerrouilles = new Set(emplacementsVerrouilles);
   const chauffeursMap = new Map(chauffeurs.map((c) => [c.id, c]));
   const elevesMap = new Map(eleves.map((e) => [e.id, e]));
@@ -308,6 +321,9 @@ export function analyserEtRecommanderZonesIA(
         const dessertDeja = chauffeurDessertZonePourVoyage(ch, zNorm, voyage.id);
         if (dessertDeja) return false;
 
+        const zonesActuelles = obtenirZonesVoyageChauffeur(ch, voyage.id);
+        if (zonesActuelles.length >= maxZones && zNorm !== zoneCommuneNorm) return false;
+
         const libres = getPlacesLibres(ch.id, voyage.id);
         return libres > 0;
       });
@@ -366,6 +382,61 @@ export function analyserEtRecommanderZonesIA(
       chauffeursRecommandes: chauffeursRecommandesPourZone,
     });
   });
+
+  // =========================================================================
+  // OBJECTIF D : EXTENSION DE LA ZONE COMMUNE POUR LES TRANSPORTS SOUS 60%
+  // Pour les bus qui tournent avec peu d'élèves (< 60%), proposer d'ajouter
+  // la zone commune (ex: Aïn Sebaâ) pour franchir le seuil et éviter d'être mis à 0,
+  // dans le strict respect du plafond de maxZones.
+  // =========================================================================
+  if (zoneCommuneNorm) {
+    chauffeurs.forEach((chauffeur) => {
+      VOYAGES.forEach((voyage) => {
+        const lockKey = `${chauffeur.id}_${voyage.id}`;
+        if (setVerrouilles.has(lockKey) || estVoyageSans(chauffeur, voyage.id)) return;
+
+        const zonesDuVoyage = obtenirZonesVoyageChauffeur(chauffeur, voyage.id);
+        const zNorms = zonesDuVoyage.map(normaliserNomZone);
+        if (zNorms.includes(zoneCommuneNorm)) return;
+        if (zonesDuVoyage.length >= maxZones) return;
+
+        const occ = placesOccupees.get(`${chauffeur.id}_${voyage.id}`) || 0;
+        const placesTotales = chauffeur.places || 26;
+        if (occ > 0 && occ / placesTotales < seuilCible) {
+          const placesLibres = Math.max(0, placesTotales - occ);
+          const keyRec = `${chauffeur.id}_AJOUTER_${zoneCommuneNorm}_${voyage.id}`;
+          if (!recommandationsMap.has(keyRec)) {
+            const zoneOrig = obtenirZoneOriginaleVoyage(chauffeur, voyage.id);
+            const libelleCommune = options?.zoneCommune?.toUpperCase() || 'AÏN SEBAÂ';
+            recommandationsMap.set(keyRec, {
+              id: `rec-commune-seuil-${keyRec}`,
+              chauffeurId: chauffeur.id,
+              chauffeurNom: chauffeur.nom,
+              zone: options?.zoneCommune || 'ain sebaa',
+              zoneNormalisee: zoneCommuneNorm,
+              action: 'AJOUTER',
+              voyagesCibles: [voyage.id],
+              voyagesLibelles: LIBELLES_VOYAGES[voyage.id] || voyage.id,
+              zoneOriginaleChauffeur: zoneOrig,
+              isZoneOriginale: false,
+              priorite: 'HAUTE',
+              categorie: 'COUVERTURE_ELEVES',
+              isZoneCommune: true,
+              seuil60Concerne: true,
+              motif: `Ajustement Seuil 60% : Assigner la zone commune ${libelleCommune} à ${chauffeur.nom} (${occ}/${placesTotales} places) pour franchir le seuil > 60% et rentabiliser le voyage dans la limite de ${maxZones} zones max.`,
+              gainEstime: {
+                elevesCouverture: Math.min(placesLibres, Math.ceil(placesTotales * seuilCible) - occ),
+                elevesContinuite: 0,
+                nomsElevesConcernes: [],
+                placesLibresActuelles: placesLibres,
+              },
+              selectionnee: true,
+            });
+          }
+        }
+      });
+    });
+  }
 
   // =========================================================================
   // OBJECTIF C : ENLEVER LES ZONES SECONDAIRES INUTILES OU EN SURNOMBRE

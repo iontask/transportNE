@@ -18,6 +18,9 @@ import {
   Bus,
   ArrowRight,
   TrendingUp,
+  Layers,
+  Settings2,
+  Fuel,
 } from 'lucide-react';
 import { Chauffeur, Eleve, ResultatRepartition } from '../types';
 import {
@@ -26,6 +29,7 @@ import {
   analyserEtRecommanderZonesIA,
   appliquerRecommandationsZonesAuxChauffeurs,
 } from '../utils/optimisationZonesIA';
+import { obtenirToutesLesZonesDisponibles } from '../utils/repartition';
 
 export interface VoletRecommandationsZonesIAProps {
   eleves: Eleve[];
@@ -49,14 +53,30 @@ export const VoletRecommandationsZonesIA: React.FC<VoletRecommandationsZonesIAPr
   isOpenParDefaut = false,
 }) => {
   const [estDeplie, setEstDeplie] = useState<boolean>(isOpenParDefaut);
-  const [filtreAction, setFiltreAction] = useState<'TOUS' | 'AJOUTER' | 'ENLEVER' | 'CONTINUITE'>('TOUS');
+  const [maxZones, setMaxZones] = useState<number>(3);
+  const [zoneCommune, setZoneCommune] = useState<string>('ain sebaa');
+  const [filtreAction, setFiltreAction] = useState<'TOUS' | 'AJOUTER' | 'ENLEVER' | 'CONTINUITE' | 'ZONE_COMMUNE'>('TOUS');
   const [recsSelectionneesIds, setRecsSelectionneesIds] = useState<Set<string>>(new Set());
   const [isApplying, setIsApplying] = useState<boolean>(false);
 
-  // Exécuter l'analyse IA dès que les élèves, chauffeurs ou résultat changent
+  // Obtenir la liste des zones pour la sélection
+  const zonesDisponibles = useMemo(() => {
+    return obtenirToutesLesZonesDisponibles(eleves, chauffeurs);
+  }, [eleves, chauffeurs]);
+
+  // Exécuter l'analyse IA dès que les élèves, chauffeurs, résultat ou options changent
   const analyse: AnalyseZonesIAResultat = useMemo(() => {
-    return analyserEtRecommanderZonesIA(eleves, chauffeurs, resultat, emplacementsVerrouilles);
-  }, [eleves, chauffeurs, resultat, emplacementsVerrouilles]);
+    return analyserEtRecommanderZonesIA(
+      eleves,
+      chauffeurs,
+      resultat,
+      emplacementsVerrouilles,
+      {
+        maxZonesParChauffeur: maxZones,
+        zoneCommune: zoneCommune === 'none' ? undefined : zoneCommune,
+      }
+    );
+  }, [eleves, chauffeurs, resultat, emplacementsVerrouilles, maxZones, zoneCommune]);
 
   // Initialiser les sélections par défaut sur les recommandations actives
   React.useEffect(() => {
@@ -71,6 +91,7 @@ export const VoletRecommandationsZonesIA: React.FC<VoletRecommandationsZonesIAPr
       if (filtreAction === 'AJOUTER') return r.action === 'AJOUTER';
       if (filtreAction === 'ENLEVER') return r.action === 'ENLEVER';
       if (filtreAction === 'CONTINUITE') return r.categorie === 'CONTINUITE';
+      if (filtreAction === 'ZONE_COMMUNE') return r.isZoneCommune || r.seuil60Concerne;
       return true;
     });
   }, [analyse.recommandations, filtreAction]);
@@ -284,9 +305,86 @@ export const VoletRecommandationsZonesIA: React.FC<VoletRecommandationsZonesIAPr
             <Sparkles className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <span className="font-extrabold uppercase tracking-wide text-[10.5px] text-purple-800 block">
-                Diagnostic & Recommandation Globale de l'IA
+                Diagnostic &amp; Recommandation Globale de l'IA
               </span>
               <p className="leading-relaxed">{analyse.syntheseIA}</p>
+            </div>
+          </div>
+
+          {/* ============================================================ */}
+          {/* PARAMÈTRES IA : PLAFOND DE ZONES & ZONE COMMUNE (AÏN SEBAÂ) */}
+          {/* ============================================================ */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200/80 pb-2">
+              <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5 uppercase tracking-wide">
+                <Settings2 className="w-3.5 h-3.5 text-purple-600" />
+                Paramètres d'Optimisation IA des Zones
+              </span>
+              <span className="text-[11px] text-slate-500 font-medium">
+                Ajuste les propositions en direct (Max {maxZones} zones &bull; Hub {zoneCommune.toUpperCase()})
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {/* Max Zones */}
+              <div className="bg-white p-2.5 rounded-lg border border-slate-200 space-y-1">
+                <label className="text-[11px] font-bold text-slate-700 flex items-center justify-between">
+                  <span className="flex items-center gap-1">
+                    <Layers className="w-3 h-3 text-blue-600" />
+                    <span>Max zones par chauffeur</span>
+                  </span>
+                  <span className="text-blue-700 font-bold text-xs font-mono">
+                    {maxZones} max
+                  </span>
+                </label>
+                <div className="grid grid-cols-5 gap-1 bg-slate-100 p-0.5 rounded-md">
+                  {[1, 2, 3, 4, 5].map((nb) => (
+                    <button
+                      key={nb}
+                      type="button"
+                      onClick={() => setMaxZones(nb)}
+                      className={`py-1 text-xs font-bold rounded transition-colors cursor-pointer text-center ${
+                        maxZones === nb
+                          ? 'bg-blue-600 text-white shadow-2xs'
+                          : 'text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {nb}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-500 leading-none pt-0.5">
+                  L'IA ne recommandera aucun ajout qui ferait dépasser ce plafond.
+                </p>
+              </div>
+
+              {/* Zone Commune */}
+              <div className="bg-white p-2.5 rounded-lg border border-slate-200 space-y-1">
+                <label className="text-[11px] font-bold text-slate-700 flex items-center gap-1">
+                  <MapPin className="w-3 h-3 text-indigo-600" />
+                  <span>Zone commune (Hub de regroupement)</span>
+                </label>
+                <select
+                  value={zoneCommune}
+                  onChange={(e) => setZoneCommune(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-purple-500 focus:outline-none cursor-pointer"
+                >
+                  <option value="ain sebaa">
+                    ⭐ AÏN SEBAÂ (Hub Principal Recommandé)
+                  </option>
+                  {zonesDisponibles
+                    .filter((z) => z.nom !== 'ain sebaa')
+                    .map((z) => (
+                      <option key={z.nom} value={z.nom}>
+                        {z.libelle} ({z.countEleves} élèves)
+                      </option>
+                    ))}
+                  <option value="none">-- Aucune zone commune --</option>
+                </select>
+                <p className="text-[10px] text-slate-500 leading-none pt-0.5">
+                  Utilisée pour combler les transports sous les 60% et regrouper les élèves.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -349,6 +447,20 @@ export const VoletRecommandationsZonesIA: React.FC<VoletRecommandationsZonesIAPr
                 <Minus className="w-3 h-3" />
                 <span>Retraits de zones ({nbRetraits})</span>
               </button>
+              {analyse.recommandations.some((r) => r.isZoneCommune || r.seuil60Concerne) && (
+                <button
+                  type="button"
+                  onClick={() => setFiltreAction('ZONE_COMMUNE')}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 ${
+                    filtreAction === 'ZONE_COMMUNE'
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'bg-white hover:bg-slate-100 text-indigo-700 border border-indigo-200'
+                  }`}
+                >
+                  <MapPin className="w-3 h-3" />
+                  <span>Zone Commune ({analyse.recommandations.filter((r) => r.isZoneCommune || r.seuil60Concerne).length})</span>
+                </button>
+              )}
             </div>
 
             {/* Actions rapides de sélection & BOUTON D'APPLICATION */}
@@ -457,6 +569,18 @@ export const VoletRecommandationsZonesIA: React.FC<VoletRecommandationsZonesIAPr
                               {rec.categorie === 'CONTINUITE' && (
                                 <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
                                   Continuité
+                                </span>
+                              )}
+                              {rec.isZoneCommune && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-0.5">
+                                  <MapPin className="w-2.5 h-2.5" />
+                                  Hub Commun
+                                </span>
+                              )}
+                              {rec.seuil60Concerne && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 flex items-center gap-0.5">
+                                  <Fuel className="w-2.5 h-2.5" />
+                                  Sauvetage &gt;60%
                                 </span>
                               )}
                             </div>
