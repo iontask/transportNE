@@ -35,7 +35,9 @@ jobs:
         run: npm install --legacy-peer-deps
 
       - name: Compilation Vite (Site statique)
-        run: npm run build:static
+        run: |
+          npm run build:static
+          cp dist/index.html dist/404.html || true
 
       - name: Configuration de GitHub Pages
         uses: actions/configure-pages@v5

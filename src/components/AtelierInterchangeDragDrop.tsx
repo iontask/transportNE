@@ -20,7 +20,10 @@ import { Eleve, Chauffeur, ResultatRepartition } from '../types';
 import { 
   VOYAGES, 
   interchangerElevesMemeZone, 
-  deplacerEleveVersChauffeurMemeZone 
+  deplacerEleveVersChauffeurMemeZone,
+  chauffeurDessertZone,
+  obtenirZonesChauffeur,
+  obtenirZonesVoyageChauffeur
 } from '../utils/repartition';
 
 interface AtelierInterchangeDragDropProps {
@@ -74,7 +77,9 @@ export const AtelierInterchangeDragDrop: React.FC<AtelierInterchangeDragDropProp
   // Liste des zones disponibles pour le filtre
   const zonesDisponibles = useMemo(() => {
     const setZ = new Set<string>();
-    chauffeurs.forEach((c) => c.zone && setZ.add(c.zone.toLowerCase().trim()));
+    chauffeurs.forEach((c) => {
+      obtenirZonesChauffeur(c).forEach((z) => setZ.add(z));
+    });
     eleves.forEach((e) => e.zone && setZ.add(e.zone.toLowerCase().trim()));
     return Array.from(setZ).sort();
   }, [chauffeurs, eleves]);
@@ -88,11 +93,11 @@ export const AtelierInterchangeDragDrop: React.FC<AtelierInterchangeDragDropProp
     if (!voyageData) return [];
     return voyageData.chauffeurs.filter((c) => {
       if (zoneFiltre === 'all') return true;
-      const zoneChauffeur = (c.chauffeur.zone || '').toLowerCase().trim();
+      const zoneChauffeurDesservie = chauffeurDessertZone(c.chauffeur, zoneFiltre, selectedVoyageId);
       const aDesElevesDansZone = c.eleves.some(
         (el) => (el.zone || '').toLowerCase().trim() === zoneFiltre
       );
-      return zoneChauffeur === zoneFiltre || aDesElevesDansZone;
+      return zoneChauffeurDesservie || aDesElevesDansZone;
     });
   }, [voyageData, zoneFiltre]);
 
@@ -184,13 +189,11 @@ export const AtelierInterchangeDragDrop: React.FC<AtelierInterchangeDragDropProp
       return;
     }
 
-    const zoneSource = (draggedEleve.zone || '').trim().toLowerCase();
-    const zoneChauffeur = (targetChauffeur.zone || '').trim().toLowerCase();
-
-    // VÉRIFICATION STRICTE DE LA MÊME ZONE
-    if (zoneSource !== zoneChauffeur) {
+    // VÉRIFICATION STRICTE DES ZONES DU CHAUFFEUR SUR CE VOYAGE
+    if (!chauffeurDessertZone(targetChauffeur, draggedEleve.zone, selectedVoyageId)) {
+      const zonesTarget = obtenirZonesVoyageChauffeur(targetChauffeur, selectedVoyageId).map((z) => z.toUpperCase()).join(', ');
       afficherNotification(
-        `⛔ Déplacement refusé : L'élève "${draggedEleve.nom}" réside en zone "${draggedEleve.zone.toUpperCase()}", alors que le bus de "${targetChauffeur.nom}" dessert la zone "${targetChauffeur.zone.toUpperCase()}". Vous ne pouvez affecter un élève qu'à un chauffeur de sa propre zone.`,
+        `⛔ Déplacement refusé : L'élève "${draggedEleve.nom}" réside en zone "${draggedEleve.zone.toUpperCase()}", alors que le créneau "${voyageMeta.libelle}" de "${targetChauffeur.nom}" dessert uniquement : [${zonesTarget || 'AUCUNE ZONE'}]. Vous ne pouvez affecter un élève qu'à un chauffeur dont la zone est sélectionnée pour ce voyage.`,
         'error'
       );
       handleDragEnd();
@@ -423,10 +426,14 @@ export const AtelierInterchangeDragDrop: React.FC<AtelierInterchangeDragDropProp
                           </span>
                         )}
                       </div>
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-slate-500">
-                        <MapPin className="w-3 h-3 text-slate-400" />
-                        {ch.zone}
-                      </span>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                        {obtenirZonesVoyageChauffeur(ch, selectedVoyageId).map((z) => (
+                          <span key={z} className="text-[10px] font-bold uppercase tracking-wider text-slate-600 bg-slate-100 px-1 py-0.5 rounded">
+                            {z}
+                          </span>
+                        ))}
+                      </div>
                     </div>
                   </div>
 
@@ -584,7 +591,7 @@ export const AtelierInterchangeDragDrop: React.FC<AtelierInterchangeDragDropProp
 
                 {/* Zone de drop bas de carte */}
                 <div className="p-2 border-t border-slate-100 bg-slate-50 text-center text-[11px] text-slate-400 font-medium">
-                  Zone cible : <span className="font-bold text-slate-600 uppercase">{ch.zone}</span>
+                  Zones cibles ({voyageMeta.libelle}) : <span className="font-bold text-slate-600 uppercase">{obtenirZonesVoyageChauffeur(ch, selectedVoyageId).map((z) => z.toUpperCase()).join(', ') || 'AUCUNE ZONE'}</span>
                 </div>
               </div>
             );

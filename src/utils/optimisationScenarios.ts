@@ -4,7 +4,8 @@ import {
   estVoyageSans, 
   getConfigVoyage,
   extraireNiveaux,
-  cibleAinSebaa
+  cibleAinSebaa,
+  chauffeurDessertZone
 } from './repartition';
 
 export const VOYAGES_IDS = ['MATIN_1', 'MATIN_2', 'APRES_MIDI_15H15', 'APRES_MIDI_16H00'] as const;
@@ -156,17 +157,8 @@ function eleveCompatibleChauffeurVoyage(
   const niveauxAutorises = extraireNiveaux(config);
   if (!niveauxAutorises.includes(eleve.niveau)) return false;
 
-  const zoneEleve = (eleve.zone || '').trim().toLowerCase();
-  const zoneChauffeur = (chauffeur.zone || '').trim().toLowerCase();
-
-  // Si même zone, compatible
-  if (zoneEleve === zoneChauffeur) return true;
-
-  // Si élève de Ain Sebaa ou chauffeur dessert Ain Sebaa
-  if (zoneEleve.includes('ain sebaa') || zoneEleve.includes('ain sebaâ')) return true;
-  if (cibleAinSebaa(config)) return true;
-
-  return false;
+  // L'affectation aux transports se fait uniquement sur la base des zones sélectionnées pour ce voyage du chauffeur
+  return chauffeurDessertZone(chauffeur, eleve.zone, voyageId);
 }
 
 /**

@@ -17,6 +17,224 @@ export const ZONE_ECOLE = 'ain sebaa';
 // FONCTIONS UTILITAIRES
 // ============================================================
 
+// Normaliser le nom d'une zone (minuscules, sans accents superflus, sans espaces superflus)
+export const normaliserNomZone = (zone: string | null | undefined): string => {
+  if (!zone) return '';
+  return zone
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+};
+
+// Obtenir la liste dédoublonnée des zones autorisées pour un chauffeur
+export const obtenirZonesChauffeur = (
+  chauffeur: Chauffeur | { zone?: string; zones?: string[] } | null | undefined
+): string[] => {
+  if (!chauffeur) return [];
+  if (Array.isArray(chauffeur.zones) && chauffeur.zones.length > 0) {
+    const list = chauffeur.zones
+      .map(normaliserNomZone)
+      .filter(Boolean);
+    if (list.length > 0) {
+      return Array.from(new Set(list));
+    }
+  }
+  if (chauffeur.zone) {
+    const parts = chauffeur.zone
+      .split(/[,;/+]/)
+      .map(normaliserNomZone)
+      .filter(Boolean);
+    if (parts.length > 0) {
+      return Array.from(new Set(parts));
+    }
+  }
+  return [];
+};
+
+export const VOYAGE_KEY_TO_ID: Record<string, string> = {
+  voyageMatin1: 'MATIN_1',
+  voyageMatin2: 'MATIN_2',
+  voyageApresMidi15h15: 'APRES_MIDI_15H15',
+  voyageApresMidi16h00: 'APRES_MIDI_16H00',
+  MATIN_1: 'MATIN_1',
+  MATIN_2: 'MATIN_2',
+  APRES_MIDI_15H15: 'APRES_MIDI_15H15',
+  APRES_MIDI_16H00: 'APRES_MIDI_16H00',
+};
+
+export const VOYAGE_ID_TO_KEY: Record<string, 'voyageMatin1' | 'voyageMatin2' | 'voyageApresMidi15h15' | 'voyageApresMidi16h00'> = {
+  MATIN_1: 'voyageMatin1',
+  MATIN_2: 'voyageMatin2',
+  APRES_MIDI_15H15: 'voyageApresMidi15h15',
+  APRES_MIDI_16H00: 'voyageApresMidi16h00',
+  voyageMatin1: 'voyageMatin1',
+  voyageMatin2: 'voyageMatin2',
+  voyageApresMidi15h15: 'voyageApresMidi15h15',
+  voyageApresMidi16h00: 'voyageApresMidi16h00',
+};
+
+// Obtenir la zone originale (zone principale/d'origine) d'un voyage pour un chauffeur
+export const obtenirZoneOriginaleVoyage = (
+  chauffeur: Chauffeur | null | undefined,
+  voyageIdOrKey: string | null | undefined
+): string => {
+  if (!chauffeur) return '';
+  const stdVoyageId = VOYAGE_KEY_TO_ID[voyageIdOrKey || ''] || voyageIdOrKey || 'MATIN_1';
+  const stdVoyageKey = VOYAGE_ID_TO_KEY[voyageIdOrKey || ''] || voyageIdOrKey || 'voyageMatin1';
+
+  // 1. Dictionnaire dédié
+  if (chauffeur.zonesOriginalesParVoyage) {
+    const val = chauffeur.zonesOriginalesParVoyage[stdVoyageId] || chauffeur.zonesOriginalesParVoyage[stdVoyageKey];
+    if (val && typeof val === 'string' && val.trim()) {
+      return normaliserNomZone(val);
+    }
+  }
+
+  // 2. Propriétés dédiées
+  if (stdVoyageId === 'MATIN_1' && chauffeur.zoneOriginaleVoyageMatin1) {
+    return normaliserNomZone(chauffeur.zoneOriginaleVoyageMatin1);
+  }
+  if (stdVoyageId === 'MATIN_2' && chauffeur.zoneOriginaleVoyageMatin2) {
+    return normaliserNomZone(chauffeur.zoneOriginaleVoyageMatin2);
+  }
+  if (stdVoyageId === 'APRES_MIDI_15H15' && chauffeur.zoneOriginaleVoyageApresMidi15h15) {
+    return normaliserNomZone(chauffeur.zoneOriginaleVoyageApresMidi15h15);
+  }
+  if (stdVoyageId === 'APRES_MIDI_16H00' && chauffeur.zoneOriginaleVoyageApresMidi16h00) {
+    return normaliserNomZone(chauffeur.zoneOriginaleVoyageApresMidi16h00);
+  }
+
+  // 3. Si l'option cible explicitement Ain Sebaa (ex: N1 AIN SEBAA, N2 AIN SEBAA)
+  const config = getConfigVoyage(chauffeur, stdVoyageId);
+  if (config && cibleAinSebaa(config)) {
+    return ZONE_ECOLE;
+  }
+
+  // 4. Si des zones sont explicitement configurées pour ce voyage, la première est la zone originale
+  const voyageZones = chauffeur.zonesParVoyage?.[stdVoyageId] || chauffeur.zonesParVoyage?.[stdVoyageKey];
+  if (Array.isArray(voyageZones) && voyageZones.length > 0) {
+    const firstNorm = normaliserNomZone(voyageZones[0]);
+    if (firstNorm) return firstNorm;
+  }
+
+  // 5. Zone d'origine générale du chauffeur ou chauffeur.zone
+  if (chauffeur.zoneOriginale) {
+    return normaliserNomZone(chauffeur.zoneOriginale);
+  }
+  const general = obtenirZonesChauffeur(chauffeur);
+  return general[0] || ZONE_ECOLE;
+};
+
+// Obtenir la liste dédoublonnée des zones autorisées pour un voyage spécifique d'un chauffeur
+export const obtenirZonesVoyageChauffeur = (
+  chauffeur: Chauffeur | null | undefined,
+  voyageIdOrKey: string | null | undefined
+): string[] => {
+  if (!chauffeur) return [];
+  if (!voyageIdOrKey) return obtenirZonesChauffeur(chauffeur);
+
+  const stdVoyageId = VOYAGE_KEY_TO_ID[voyageIdOrKey] || voyageIdOrKey;
+  const stdVoyageKey = VOYAGE_ID_TO_KEY[voyageIdOrKey] || voyageIdOrKey;
+
+  let zones: string[] = [];
+
+  // 1. Dictionnaire zonesParVoyage
+  if (chauffeur.zonesParVoyage) {
+    const list = chauffeur.zonesParVoyage[stdVoyageId] || chauffeur.zonesParVoyage[stdVoyageKey];
+    if (Array.isArray(list) && list.length > 0) {
+      zones = list.map(normaliserNomZone).filter(Boolean);
+    }
+  }
+
+  // 2. Propriétés dédiées par voyage
+  if (zones.length === 0) {
+    if (stdVoyageId === 'MATIN_1' && Array.isArray(chauffeur.zonesVoyageMatin1) && chauffeur.zonesVoyageMatin1.length > 0) {
+      zones = chauffeur.zonesVoyageMatin1.map(normaliserNomZone).filter(Boolean);
+    } else if (stdVoyageId === 'MATIN_2' && Array.isArray(chauffeur.zonesVoyageMatin2) && chauffeur.zonesVoyageMatin2.length > 0) {
+      zones = chauffeur.zonesVoyageMatin2.map(normaliserNomZone).filter(Boolean);
+    } else if (stdVoyageId === 'APRES_MIDI_15H15' && Array.isArray(chauffeur.zonesVoyageApresMidi15h15) && chauffeur.zonesVoyageApresMidi15h15.length > 0) {
+      zones = chauffeur.zonesVoyageApresMidi15h15.map(normaliserNomZone).filter(Boolean);
+    } else if (stdVoyageId === 'APRES_MIDI_16H00' && Array.isArray(chauffeur.zonesVoyageApresMidi16h00) && chauffeur.zonesVoyageApresMidi16h00.length > 0) {
+      zones = chauffeur.zonesVoyageApresMidi16h00.map(normaliserNomZone).filter(Boolean);
+    }
+  }
+
+  // 3. Repli : si l'option du voyage cible explicitement AIN SEBAA
+  if (zones.length === 0) {
+    const config = getConfigVoyage(chauffeur, stdVoyageId);
+    if (config && cibleAinSebaa(config)) {
+      const general = obtenirZonesChauffeur(chauffeur);
+      if (general.includes(ZONE_ECOLE)) {
+        zones = [ZONE_ECOLE];
+      }
+    }
+  }
+
+  // 4. Repli par défaut sur les zones globales du chauffeur
+  if (zones.length === 0) {
+    zones = obtenirZonesChauffeur(chauffeur);
+  }
+
+  // S'assurer que la zone originale du voyage est bien incluse et placée en tête (prioritaire)
+  const zoneOrig = (
+    chauffeur.zonesOriginalesParVoyage?.[stdVoyageId] ||
+    chauffeur.zonesOriginalesParVoyage?.[stdVoyageKey] ||
+    (stdVoyageId === 'MATIN_1' ? chauffeur.zoneOriginaleVoyageMatin1 : undefined) ||
+    (stdVoyageId === 'MATIN_2' ? chauffeur.zoneOriginaleVoyageMatin2 : undefined) ||
+    (stdVoyageId === 'APRES_MIDI_15H15' ? chauffeur.zoneOriginaleVoyageApresMidi15h15 : undefined) ||
+    (stdVoyageId === 'APRES_MIDI_16H00' ? chauffeur.zoneOriginaleVoyageApresMidi16h00 : undefined)
+  );
+  if (zoneOrig) {
+    const normOrig = normaliserNomZone(zoneOrig);
+    if (normOrig) {
+      zones = [normOrig, ...zones.filter((z) => z !== normOrig)];
+    }
+  }
+
+  return Array.from(new Set(zones.filter(Boolean)));
+};
+
+// Vérifie si un chauffeur dessert une zone d'élève pour un voyage donné
+export const chauffeurDessertZonePourVoyage = (
+  chauffeur: Chauffeur | null | undefined,
+  zoneEleve: string | null | undefined,
+  voyageIdOrKey: string | null | undefined
+): boolean => {
+  const zNorm = normaliserNomZone(zoneEleve);
+  if (!zNorm) return false;
+  const zonesVoyage = obtenirZonesVoyageChauffeur(chauffeur, voyageIdOrKey);
+  return zonesVoyage.includes(zNorm);
+};
+
+// Obtenir l'ensemble de toutes les zones couvertes par un chauffeur sur l'ensemble de ses voyages
+export const obtenirToutesZonesChauffeur = (
+  chauffeur: Chauffeur | null | undefined
+): string[] => {
+  if (!chauffeur) return [];
+  const setZ = new Set<string>(obtenirZonesChauffeur(chauffeur));
+  VOYAGES.forEach((v) => {
+    obtenirZonesVoyageChauffeur(chauffeur, v.id).forEach((z) => setZ.add(z));
+  });
+  return Array.from(setZ);
+};
+
+// Vérifie si un chauffeur dessert une zone d'élève donnée (avec voyageId optionnel)
+export const chauffeurDessertZone = (
+  chauffeur: Chauffeur | { zone?: string; zones?: string[] } | null | undefined,
+  zoneEleve: string | null | undefined,
+  voyageId?: string
+): boolean => {
+  if (voyageId && chauffeur && 'voyageMatin1' in chauffeur) {
+    return chauffeurDessertZonePourVoyage(chauffeur as Chauffeur, zoneEleve, voyageId);
+  }
+  const zNorm = normaliserNomZone(zoneEleve);
+  if (!zNorm) return false;
+  const zonesChauffeur = obtenirZonesChauffeur(chauffeur);
+  return zonesChauffeur.includes(zNorm);
+};
+
 // Normaliser n'importe quelle valeur de voyage en l'une des 7 options valides :
 // N1, N2, N1 AIN SEBAA, N2 AIN SEBAA, SANS, N1 ET N2, N1 AIN SEBAA ET N2 AIN SEBAA
 export const normaliserOptionVoyage = (val: string | null | undefined): OptionVoyageChauffeur => {
@@ -89,19 +307,236 @@ export const obtenirEmplacementsSansVerrouilles = (chauffeurs: Chauffeur[]): Set
 };
 
 // ============================================================
+// CONTINUITÉ CHAUFFEUR MATIN / APRÈS-MIDI
+// ============================================================
+
+// Vérifier si un chauffeur est compatible pour transporter un élève sur un voyage donné
+export const chauffeurPeutTransporterEleve = (
+  chauffeur: Chauffeur,
+  eleve: Eleve,
+  voyageId: string
+): boolean => {
+  if (estVoyageSans(chauffeur, voyageId)) return false;
+  // Vérification de concordance de niveau
+  const config = getConfigVoyage(chauffeur, voyageId);
+  const niveaux = extraireNiveaux(config);
+  if (niveaux.length > 0 && !niveaux.includes(eleve.niveau)) return false;
+  if (voyageId === 'APRES_MIDI_15H15' && eleve.niveau !== 1) return false;
+  if (voyageId === 'APRES_MIDI_16H00' && eleve.niveau !== 2) return false;
+  // Vérification de desserte de la zone
+  return chauffeurDessertZonePourVoyage(chauffeur, eleve.zone, voyageId);
+};
+
+// Vérifier si un chauffeur peut également transporter cet élève sur son trajet de retour l'après-midi
+export const chauffeurPeutPrendreApresMidi = (
+  chauffeur: Chauffeur,
+  eleve: Eleve
+): boolean => {
+  const voyageApresMidiId = eleve.niveau === 1 ? 'APRES_MIDI_15H15' : 'APRES_MIDI_16H00';
+  return chauffeurPeutTransporterEleve(chauffeur, eleve, voyageApresMidiId);
+};
+
+// Optimiseur post-affectation pour maximiser la règle :
+// "Les élèves transportés le matin doivent être les mêmes l'après-midi"
+export const optimiserContinuiteMatinApresMidi = (
+  affectationsInitiales: AffectationEleve[],
+  eleves: Eleve[],
+  chauffeurs: Chauffeur[],
+  emplacementsVerrouilles: Set<string> = new Set()
+): AffectationEleve[] => {
+  const affectations: AffectationEleve[] = affectationsInitiales.map((a) => ({ ...a }));
+  const elevesMap = new Map(eleves.map((e) => [e.id, e]));
+  const chauffeursMap = new Map(chauffeurs.map((c) => [c.id, c]));
+
+  const peutPrendre = (chauffeurId: string, eleve: Eleve, voyageId: string): boolean => {
+    const c = chauffeursMap.get(chauffeurId);
+    if (!c) return false;
+    if (emplacementsVerrouilles.has(`${chauffeurId}_${voyageId}`)) return false;
+    return chauffeurPeutTransporterEleve(c, eleve, voyageId);
+  };
+
+  const getPlacesOccupees = (chId: string, vId: string): number => {
+    return affectations.filter((a) => a.chauffeurId === chId && a.voyageId === vId).length;
+  };
+
+  const getAffMatin = (eleveId: string) => {
+    return affectations.find(
+      (a) => a.eleveId === eleveId && (a.voyageId === 'MATIN_1' || a.voyageId === 'MATIN_2')
+    );
+  };
+
+  const getAffAprem = (eleveId: string) => {
+    return affectations.find(
+      (a) => a.eleveId === eleveId && (a.voyageId === 'APRES_MIDI_15H15' || a.voyageId === 'APRES_MIDI_16H00')
+    );
+  };
+
+  // PASSE 1 : ÉCHANGES BILATÉRAUX D'APRÈS-MIDI (15h15 et 16h00)
+  // Si A a C1 le matin et C2 l'après-midi, et B a C2 le matin et C1 l'après-midi
+  // Échanger A et B l'après-midi restaure la continuité pour les DEUX élèves !
+  const voyagesAprem = ['APRES_MIDI_15H15', 'APRES_MIDI_16H00'];
+  voyagesAprem.forEach((voyageId) => {
+    let continueLoop = true;
+    let tour = 0;
+    while (continueLoop && tour < 40) {
+      continueLoop = false;
+      tour++;
+
+      const affsVoyage = affectations.filter((a) => a.voyageId === voyageId);
+      for (let i = 0; i < affsVoyage.length; i++) {
+        const affA = affsVoyage[i];
+        const eleveA = elevesMap.get(affA.eleveId);
+        if (!eleveA) continue;
+        const matinA = getAffMatin(eleveA.id);
+        if (!matinA || matinA.chauffeurId === affA.chauffeurId) continue;
+
+        const cMatinA = matinA.chauffeurId;
+        const cActuelA = affA.chauffeurId;
+
+        // Chercher un élève B chez cMatinA
+        for (let j = 0; j < affsVoyage.length; j++) {
+          if (i === j) continue;
+          const affB = affsVoyage[j];
+          if (affB.chauffeurId !== cMatinA) continue;
+
+          const eleveB = elevesMap.get(affB.eleveId);
+          if (!eleveB) continue;
+          const matinB = getAffMatin(eleveB.id);
+
+          const bEstMatinCActuelA = matinB && matinB.chauffeurId === cActuelA;
+          const bNeutre = !matinB || matinB.chauffeurId !== cMatinA;
+
+          if (
+            (bEstMatinCActuelA || bNeutre) &&
+            peutPrendre(cMatinA, eleveA, voyageId) &&
+            peutPrendre(cActuelA, eleveB, voyageId)
+          ) {
+            affA.chauffeurId = cMatinA;
+            affB.chauffeurId = cActuelA;
+            continueLoop = true;
+            break;
+          }
+        }
+        if (continueLoop) break;
+      }
+    }
+  });
+
+  // PASSE 2 : TRANSFERT UNILATÉRAL VERS PLACES DISPONIBLES D'APRÈS-MIDI
+  voyagesAprem.forEach((voyageId) => {
+    const affsVoyage = affectations.filter((a) => a.voyageId === voyageId);
+    affsVoyage.forEach((aff) => {
+      const eleve = elevesMap.get(aff.eleveId);
+      if (!eleve) return;
+      const affMatin = getAffMatin(eleve.id);
+      if (!affMatin || affMatin.chauffeurId === aff.chauffeurId) return;
+
+      const cMatinId = affMatin.chauffeurId;
+      const cMatin = chauffeursMap.get(cMatinId);
+      if (!cMatin) return;
+
+      if (
+        peutPrendre(cMatinId, eleve, voyageId) &&
+        getPlacesOccupees(cMatinId, voyageId) < cMatin.places
+      ) {
+        aff.chauffeurId = cMatinId;
+      }
+    });
+  });
+
+  // PASSE 3 : ÉCHANGES BILATÉRAUX DU MATIN (MATIN_1 et MATIN_2)
+  const voyagesMatin = ['MATIN_1', 'MATIN_2'];
+  voyagesMatin.forEach((voyageId) => {
+    let continueLoop = true;
+    let tour = 0;
+    while (continueLoop && tour < 40) {
+      continueLoop = false;
+      tour++;
+
+      const affsVoyage = affectations.filter((a) => a.voyageId === voyageId);
+      for (let i = 0; i < affsVoyage.length; i++) {
+        const affA = affsVoyage[i];
+        const eleveA = elevesMap.get(affA.eleveId);
+        if (!eleveA) continue;
+        const apremA = getAffAprem(eleveA.id);
+        if (!apremA || apremA.chauffeurId === affA.chauffeurId) continue;
+
+        const cApremA = apremA.chauffeurId;
+        const cActuelA = affA.chauffeurId;
+
+        for (let j = 0; j < affsVoyage.length; j++) {
+          if (i === j) continue;
+          const affB = affsVoyage[j];
+          if (affB.chauffeurId !== cApremA) continue;
+
+          const eleveB = elevesMap.get(affB.eleveId);
+          if (!eleveB) continue;
+          const apremB = getAffAprem(eleveB.id);
+
+          const bEstApremCActuelA = apremB && apremB.chauffeurId === cActuelA;
+          const bNeutre = !apremB || apremB.chauffeurId !== cApremA;
+
+          if (
+            (bEstApremCActuelA || bNeutre) &&
+            peutPrendre(cApremA, eleveA, voyageId) &&
+            peutPrendre(cActuelA, eleveB, voyageId)
+          ) {
+            affA.chauffeurId = cApremA;
+            affB.chauffeurId = cActuelA;
+            continueLoop = true;
+            break;
+          }
+        }
+        if (continueLoop) break;
+      }
+    }
+  });
+
+  // PASSE 4 : TRANSFERT UNILATÉRAL DU MATIN VERS PLACES DISPONIBLES
+  voyagesMatin.forEach((voyageId) => {
+    const affsVoyage = affectations.filter((a) => a.voyageId === voyageId);
+    affsVoyage.forEach((aff) => {
+      const eleve = elevesMap.get(aff.eleveId);
+      if (!eleve) return;
+      const affAprem = getAffAprem(eleve.id);
+      if (!affAprem || affAprem.chauffeurId === aff.chauffeurId) return;
+
+      const cApremId = affAprem.chauffeurId;
+      const cAprem = chauffeursMap.get(cApremId);
+      if (!cAprem) return;
+
+      if (
+        peutPrendre(cApremId, eleve, voyageId) &&
+        getPlacesOccupees(cApremId, voyageId) < cAprem.places
+      ) {
+        aff.chauffeurId = cApremId;
+      }
+    });
+  });
+
+  return affectations;
+};
+
+// ============================================================
 // ALGORITHME PRINCIPAL
 // ============================================================
 
+export interface OptionsRepartition {
+  pourcentagesCibles?: Record<string, number>;
+}
+
 export const repartir = (
   eleves: Eleve[],
-  chauffeurs: Chauffeur[]
+  chauffeurs: Chauffeur[],
+  options?: OptionsRepartition
 ): ResultatRepartition => {
-  const affectations: AffectationEleve[] = [];
+  let affectations: AffectationEleve[] = [];
   const alertes: Alerte[] = [];
 
-  // Set des élèves déjà affectés (par voyage)
-  // Clé: `${voyageId}_${eleveId}`
+  // Set des élèves déjà affectés par voyage (`${voyageId}_${eleveId}`)
   const elevesAffectes = new Set<string>();
+  // Set des élèves affectés au matin (pour éviter de doubler un élève sur MATIN_1 et MATIN_2)
+  const elevesAffectesMatin = new Set<string>();
 
   // ============================================================
   // ÉTAPE 1 : ANALYSE PRÉALABLE
@@ -110,7 +545,7 @@ export const repartir = (
   // 1.1 Grouper les élèves par zone et niveau
   const elevesParZoneEtNiveau: Record<string, { 1: Eleve[]; 2: Eleve[] }> = {};
   eleves.forEach((eleve) => {
-    const zoneKey = eleve.zone ? eleve.zone.trim().toLowerCase() : 'inconnue';
+    const zoneKey = normaliserNomZone(eleve.zone) || 'inconnue';
     if (!elevesParZoneEtNiveau[zoneKey]) {
       elevesParZoneEtNiveau[zoneKey] = { 1: [], 2: [] };
     }
@@ -118,27 +553,37 @@ export const repartir = (
     elevesParZoneEtNiveau[zoneKey][niv].push(eleve);
   });
 
-  // 1.2 Grouper les chauffeurs par zone
+  // 1.2 Grouper les chauffeurs par zone (tenant compte de toutes les zones couvertes sur ses voyages)
   const chauffeursParZone: Record<string, Chauffeur[]> = {};
   chauffeurs.forEach((chauffeur) => {
-    const zoneKey = chauffeur.zone ? chauffeur.zone.trim().toLowerCase() : 'inconnue';
-    if (!chauffeursParZone[zoneKey]) {
-      chauffeursParZone[zoneKey] = [];
-    }
-    chauffeursParZone[zoneKey].push(chauffeur);
+    const zones = obtenirToutesZonesChauffeur(chauffeur);
+    const zonesToRegister = zones.length > 0 ? zones : ['inconnue'];
+    zonesToRegister.forEach((z) => {
+      if (!chauffeursParZone[z]) {
+        chauffeursParZone[z] = [];
+      }
+      chauffeursParZone[z].push(chauffeur);
+    });
   });
 
-  // 1.3 Calculer les déficits par zone
+  // 1.3 Calculer les capacités et déficits par zone
   Object.keys(elevesParZoneEtNiveau).forEach((zone) => {
     const elevesZone = elevesParZoneEtNiveau[zone];
     const totalEleves = elevesZone[1].length + elevesZone[2].length;
     const chauffeursZone = chauffeursParZone[zone] || [];
     const capaciteZone = chauffeursZone.reduce((sum, c) => sum + (c.places || 0), 0);
 
-    if (totalEleves > capaciteZone) {
+    if (chauffeursZone.length === 0) {
+      alertes.push({
+        type: 'ZONE_SANS_CHAUFFEUR',
+        message: `Zone ${zone.toUpperCase()} : ${totalEleves} élève(s) inscrit(s), mais AUCUN chauffeur n'a cette zone sélectionnée !`,
+        severite: 'ERROR',
+        details: { zone, totalEleves, capaciteZone: 0 },
+      });
+    } else if (totalEleves > capaciteZone) {
       alertes.push({
         type: 'DEFICIT_ZONE',
-        message: `Zone ${zone.toUpperCase()} : ${totalEleves} élèves pour ${capaciteZone} places (déficit de ${totalEleves - capaciteZone})`,
+        message: `Zone ${zone.toUpperCase()} : ${totalEleves} élèves pour ${capaciteZone} places réparties sur ${chauffeursZone.length} chauffeur(s) (déficit de ${totalEleves - capaciteZone})`,
         severite: 'WARNING',
         details: { zone, totalEleves, capaciteZone },
       });
@@ -146,83 +591,171 @@ export const repartir = (
   });
 
   // ============================================================
-  // ÉTAPE 2 : AFFECTATION PAR VOYAGE
+  // ÉTAPE 2.1 : AFFECTATION DU MATIN (MATIN_1 & MATIN_2)
+  // Anticipation de la règle de continuité : favoriser les élèves que
+  // ce chauffeur pourra également transporter l'après-midi !
   // ============================================================
+  const voyagesMatin = [
+    { id: 'MATIN_1', libelle: 'Matin 1', heure: '08:30', niveau: null },
+    { id: 'MATIN_2', libelle: 'Matin 2', heure: '09:15', niveau: null },
+  ];
 
-  // Pour chaque voyage, dans l'ordre chronologique
-  VOYAGES.forEach((voyage) => {
+  voyagesMatin.forEach((voyage) => {
     const voyageId = voyage.id;
-    const niveauCible = voyage.niveau; // null = tous niveaux
-
-    // 2.1 Déterminer les chauffeurs actifs pour ce voyage
     const chauffeursActifs = chauffeurs
-      .filter((c) => {
-        const config = getConfigVoyage(c, voyageId);
-        return !config.toUpperCase().includes('SANS');
-      })
+      .filter((c) => !estVoyageSans(c, voyageId))
       .sort((a, b) => b.places - a.places); // Trier par capacité décroissante
 
-    // 2.2 Déterminer les niveaux à affecter pour ce voyage
-    const niveauxAffecter: number[] = niveauCible ? [niveauCible] : [1, 2];
-
-    // 2.3 Pour chaque chauffeur actif
     chauffeursActifs.forEach((chauffeur) => {
       const config = getConfigVoyage(chauffeur, voyageId);
       const niveauxChauffeur = extraireNiveaux(config);
       const cibleAinSebaaChauffeur = cibleAinSebaa(config);
-      const zoneChauffeur = (chauffeur.zone || '').trim().toLowerCase();
+      const zonesAutorisees = obtenirZonesVoyageChauffeur(chauffeur, voyageId);
 
       let placesDisponibles = chauffeur.places;
+      const ciblePct = options?.pourcentagesCibles?.[voyageId];
+      if (typeof ciblePct === 'number' && ciblePct < 100) {
+        placesDisponibles = Math.max(0, Math.round((chauffeur.places * ciblePct) / 100));
+      }
+      const niveauxEffectifs = [1, 2].filter((n) => niveauxChauffeur.includes(n));
 
-      // Filtrer les niveaux selon la config du chauffeur
-      const niveauxEffectifs = niveauxAffecter.filter((n) => 
-        niveauxChauffeur.includes(n)
-      );
-
-      // Déterminer l'ordre des zones prioritaires pour ce chauffeur selon sa configuration de voyage :
-      // - Si la config cible spécifiquement AIN SEBAA (ex: "N1 AIN SEBAA", "N2 AIN SEBAA", "N1 AIN SEBAA ET N2 AIN SEBAA") :
-      //   Priorité 1 : AIN SEBAA (zone école)
-      //   Priorité 2 : Sa propre zone (si différente d'ain sebaa)
-      //   Priorité 3 : Autres zones
-      // - Si la config est standard (ex: "N1", "N2", "N1 ET N2") :
-      //   Priorité 1 : Sa propre zone
-      //   Priorité 2 : AIN SEBAA (si différente de sa zone)
-      //   Priorité 3 : Autres zones si navette/places restantes
-      const zoneP1 = cibleAinSebaaChauffeur ? ZONE_ECOLE : zoneChauffeur;
-      const zoneP2 = cibleAinSebaaChauffeur ? zoneChauffeur : ZONE_ECOLE;
-
-      // 2.3.1 PRIORITÉ 1 : Zone cible principale du voyage
-      niveauxEffectifs.forEach((niveau) => {
-        if (placesDisponibles <= 0) return;
-
-        const elevesZone = elevesParZoneEtNiveau[zoneP1]?.[niveau as 1 | 2] || [];
-        const elevesEligibles = elevesZone.filter((e) => 
-          !elevesAffectes.has(`${voyageId}_${e.id}`)
-        );
-
-        const nbAPrendre = Math.min(elevesEligibles.length, placesDisponibles);
-        const elevesPris = elevesEligibles.slice(0, nbAPrendre);
-
-        elevesPris.forEach((eleve) => {
-          affectations.push({
-            eleveId: eleve.id,
-            chauffeurId: chauffeur.id,
-            voyageId,
-          });
-          elevesAffectes.add(`${voyageId}_${eleve.id}`);
-          placesDisponibles--;
-        });
+      const zoneOriginaleDuVoyage = obtenirZoneOriginaleVoyage(chauffeur, voyageId);
+      const zonesOrdonnees = [...zonesAutorisees].sort((a, b) => {
+        if (cibleAinSebaaChauffeur) {
+          if (a === ZONE_ECOLE) return -1;
+          if (b === ZONE_ECOLE) return 1;
+        }
+        if (zoneOriginaleDuVoyage) {
+          if (a === zoneOriginaleDuVoyage) return -1;
+          if (b === zoneOriginaleDuVoyage) return 1;
+        }
+        return 0;
       });
 
-      // 2.3.2 PRIORITÉ 2 : Zone secondaire (si différente et places restantes)
-      if (placesDisponibles > 0 && zoneP2 !== zoneP1) {
+      zonesOrdonnees.forEach((zone) => {
+        if (placesDisponibles <= 0) return;
+
         niveauxEffectifs.forEach((niveau) => {
           if (placesDisponibles <= 0) return;
 
-          const elevesZone = elevesParZoneEtNiveau[zoneP2]?.[niveau as 1 | 2] || [];
-          const elevesEligibles = elevesZone.filter((e) => 
-            !elevesAffectes.has(`${voyageId}_${e.id}`)
-          );
+          const elevesZone = elevesParZoneEtNiveau[zone]?.[niveau as 1 | 2] || [];
+          // Les élèves éligibles sont ceux qui n'ont pas encore été affectés le matin
+          const elevesEligibles = elevesZone.filter((e) => !elevesAffectesMatin.has(e.id));
+
+          // PRIORITÉ CONTINUITÉ MATIN :
+          // Prioriser en premier les élèves que ce chauffeur peut aussi prendre l'après-midi
+          elevesEligibles.sort((a, b) => {
+            const aAprem = chauffeurPeutPrendreApresMidi(chauffeur, a) ? 1 : 0;
+            const bAprem = chauffeurPeutPrendreApresMidi(chauffeur, b) ? 1 : 0;
+            return bAprem - aAprem;
+          });
+
+          const nbAPrendre = Math.min(elevesEligibles.length, placesDisponibles);
+          const elevesPris = elevesEligibles.slice(0, nbAPrendre);
+
+          elevesPris.forEach((eleve) => {
+            affectations.push({
+              eleveId: eleve.id,
+              chauffeurId: chauffeur.id,
+              voyageId,
+            });
+            elevesAffectes.add(`${voyageId}_${eleve.id}`);
+            elevesAffectesMatin.add(eleve.id);
+            placesDisponibles--;
+          });
+        });
+      });
+    });
+  });
+
+  // Table de correspondance directe Élève -> Chauffeur ayant assuré le matin
+  const chauffeurMatinMap = new Map<string, string>();
+  affectations.forEach((a) => {
+    if (a.voyageId === 'MATIN_1' || a.voyageId === 'MATIN_2') {
+      chauffeurMatinMap.set(a.eleveId, a.chauffeurId);
+    }
+  });
+
+  // ============================================================
+  // ÉTAPE 2.2 : AFFECTATION DE L'APRÈS-MIDI (15H15 & 16H00)
+  // RÈGLE PRIORITAIRE ABSOLUE : LES ÉLÈVES DU MATIN SONT PRIS EN
+  // PRIORITÉ 1 PAR LEUR MÊME CHAUFFEUR DU MATIN !
+  // ============================================================
+  const voyagesApresMidi = [
+    { id: 'APRES_MIDI_15H15', libelle: 'Après-midi 15h15', heure: '15:15', niveau: 1 },
+    { id: 'APRES_MIDI_16H00', libelle: 'Après-midi 16h00', heure: '16:00', niveau: 2 },
+  ];
+
+  voyagesApresMidi.forEach((voyage) => {
+    const voyageId = voyage.id;
+    const niveauCible = voyage.niveau;
+
+    const chauffeursActifs = chauffeurs
+      .filter((c) => !estVoyageSans(c, voyageId))
+      .sort((a, b) => b.places - a.places);
+
+    chauffeursActifs.forEach((chauffeur) => {
+      const config = getConfigVoyage(chauffeur, voyageId);
+      const niveauxChauffeur = extraireNiveaux(config);
+      const cibleAinSebaaChauffeur = cibleAinSebaa(config);
+      const zonesAutorisees = obtenirZonesVoyageChauffeur(chauffeur, voyageId);
+
+      let placesDisponibles = chauffeur.places;
+      const ciblePct = options?.pourcentagesCibles?.[voyageId];
+      if (typeof ciblePct === 'number' && ciblePct < 100) {
+        placesDisponibles = Math.max(0, Math.round((chauffeur.places * ciblePct) / 100));
+      }
+      const niveauxEffectifs = [niveauCible].filter((n) => niveauxChauffeur.includes(n));
+
+      const zoneOriginaleDuVoyage = obtenirZoneOriginaleVoyage(chauffeur, voyageId);
+      const zonesOrdonnees = [...zonesAutorisees].sort((a, b) => {
+        if (cibleAinSebaaChauffeur) {
+          if (a === ZONE_ECOLE) return -1;
+          if (b === ZONE_ECOLE) return 1;
+        }
+        if (zoneOriginaleDuVoyage) {
+          if (a === zoneOriginaleDuVoyage) return -1;
+          if (b === zoneOriginaleDuVoyage) return 1;
+        }
+        return 0;
+      });
+
+      zonesOrdonnees.forEach((zone) => {
+        if (placesDisponibles <= 0) return;
+
+        niveauxEffectifs.forEach((niveau) => {
+          if (placesDisponibles <= 0) return;
+
+          const elevesZone = elevesParZoneEtNiveau[zone]?.[niveau as 1 | 2] || [];
+          const elevesEligibles = elevesZone.filter((e) => !elevesAffectes.has(`${voyageId}_${e.id}`));
+
+          // TRI DE CONTINUITÉ STRICT :
+          // 1. Priorité 1 absolue : élèves transportés par CE chauffeur le matin
+          // 2. Priorité 2 : élèves sans transport matin
+          // 3. Priorité 3 : élèves dont le chauffeur du matin ne dessert pas cet après-midi
+          // 4. Priorité 4 : élèves dont le chauffeur du matin est actif sur ce créneau (laisser la priorité à leur chauffeur)
+          elevesEligibles.sort((a, b) => {
+            const aChMatin = chauffeurMatinMap.get(a.id);
+            const bChMatin = chauffeurMatinMap.get(b.id);
+
+            const aIsSame = aChMatin === chauffeur.id ? 100 : 0;
+            const bIsSame = bChMatin === chauffeur.id ? 100 : 0;
+            if (aIsSame !== bIsSame) return bIsSame - aIsSame;
+
+            // Si ni l'un ni l'autre n'a ce chauffeur le matin :
+            const aChMatinActif = aChMatin
+              ? chauffeursActifs.some((c) => c.id === aChMatin && chauffeurDessertZonePourVoyage(c, a.zone, voyageId))
+              : false;
+            const bChMatinActif = bChMatin
+              ? chauffeursActifs.some((c) => c.id === bChMatin && chauffeurDessertZonePourVoyage(c, b.zone, voyageId))
+              : false;
+
+            if (aChMatinActif !== bChMatinActif) {
+              return aChMatinActif ? 1 : -1;
+            }
+
+            return 0;
+          });
 
           const nbAPrendre = Math.min(elevesEligibles.length, placesDisponibles);
           const elevesPris = elevesEligibles.slice(0, nbAPrendre);
@@ -237,39 +770,15 @@ export const repartir = (
             placesDisponibles--;
           });
         });
-      }
-
-      // 2.3.3 PRIORITÉ 3 : Autres zones restantes
-      if (placesDisponibles > 0 && (cibleAinSebaaChauffeur || zoneChauffeur === ZONE_ECOLE)) {
-        niveauxEffectifs.forEach((niveau) => {
-          if (placesDisponibles <= 0) return;
-
-          Object.keys(elevesParZoneEtNiveau).forEach((zone) => {
-            if (zone === zoneP1 || zone === zoneP2) return;
-            if (placesDisponibles <= 0) return;
-
-            const elevesZone = elevesParZoneEtNiveau[zone]?.[niveau as 1 | 2] || [];
-            const elevesEligibles = elevesZone.filter((e) => 
-              !elevesAffectes.has(`${voyageId}_${e.id}`)
-            );
-
-            const nbAPrendre = Math.min(elevesEligibles.length, placesDisponibles);
-            const elevesPris = elevesEligibles.slice(0, nbAPrendre);
-
-            elevesPris.forEach((eleve) => {
-              affectations.push({
-                eleveId: eleve.id,
-                chauffeurId: chauffeur.id,
-                voyageId,
-              });
-              elevesAffectes.add(`${voyageId}_${eleve.id}`);
-              placesDisponibles--;
-            });
-          });
-        });
-      }
+      });
     });
   });
+
+  // ============================================================
+  // ÉTAPE 2.3 : POST-OPTIMISATION DE CONTINUITÉ MATIN / APRÈS-MIDI
+  // Résolution automatique par échanges et transferts de sièges
+  // ============================================================
+  affectations = optimiserContinuiteMatinApresMidi(affectations, eleves, chauffeurs);
 
   // ============================================================
   // ÉTAPE 3 : CONSTRUIRE LES RÉSULTATS
@@ -447,6 +956,94 @@ export const construireResultatDepuisAffectations = (
     });
   }
 
+  // 3.5 Continuité Matin / Après-midi (Même chauffeur)
+  let nbElevesMemeChauffeur = 0;
+  let nbElevesChauffeurDifferent = 0;
+  let nbElevesEligiblesContinuite = 0;
+  const elevesContinuiteDetails: Array<{
+    eleveId: string;
+    nomComplet: string;
+    zone: string;
+    niveau: number;
+    chauffeurMatinId: string;
+    chauffeurMatinNom: string;
+    chauffeurApresMidiId: string;
+    chauffeurApresMidiNom: string;
+    memeChauffeur: boolean;
+    voyageMatin: string;
+    voyageApresMidi: string;
+    motifDifference?: string;
+  }> = [];
+
+  const chauffeursMap = new Map(chauffeurs.map((c) => [c.id, c]));
+
+  eleves.forEach((e) => {
+    const affMatin = affectations.find(
+      (a) => a.eleveId === e.id && (a.voyageId === 'MATIN_1' || a.voyageId === 'MATIN_2')
+    );
+    const affAprem = affectations.find(
+      (a) => a.eleveId === e.id && (a.voyageId === 'APRES_MIDI_15H15' || a.voyageId === 'APRES_MIDI_16H00')
+    );
+
+    if (affMatin && affAprem) {
+      nbElevesEligiblesContinuite++;
+      const cMatin = chauffeursMap.get(affMatin.chauffeurId);
+      const cAprem = chauffeursMap.get(affAprem.chauffeurId);
+      const cMatinNom = cMatin?.nom || 'Inconnu';
+      const cApremNom = cAprem?.nom || 'Inconnu';
+      const memeChauffeur = affMatin.chauffeurId === affAprem.chauffeurId;
+
+      if (memeChauffeur) {
+        nbElevesMemeChauffeur++;
+      } else {
+        nbElevesChauffeurDifferent++;
+        let motifDifference = 'Contrainte de rotation ou capacité différente';
+        if (cMatin && estVoyageSans(cMatin, affAprem.voyageId)) {
+          motifDifference = `${cMatinNom} n'effectue pas de rotation à ${affAprem.voyageId === 'APRES_MIDI_15H15' ? '15h15' : '16h00'}`;
+        } else if (cMatin && !chauffeurDessertZonePourVoyage(cMatin, e.zone, affAprem.voyageId)) {
+          motifDifference = `${cMatinNom} ne dessert pas ${e.zone} à ${affAprem.voyageId === 'APRES_MIDI_15H15' ? '15h15' : '16h00'}`;
+        }
+        elevesContinuiteDetails.push({
+          eleveId: e.id,
+          nomComplet: `${e.prenom} ${e.nom}`.trim(),
+          zone: e.zone,
+          niveau: e.niveau,
+          chauffeurMatinId: affMatin.chauffeurId,
+          chauffeurMatinNom: cMatinNom,
+          chauffeurApresMidiId: affAprem.chauffeurId,
+          chauffeurApresMidiNom: cApremNom,
+          memeChauffeur: false,
+          voyageMatin: affMatin.voyageId,
+          voyageApresMidi: affAprem.voyageId,
+          motifDifference,
+        });
+      }
+    }
+  });
+
+  const tauxMemeChauffeurMatinApresMidi =
+    nbElevesEligiblesContinuite > 0
+      ? Math.round((nbElevesMemeChauffeur / nbElevesEligiblesContinuite) * 100)
+      : 100;
+
+  if (nbElevesEligiblesContinuite > 0) {
+    if (tauxMemeChauffeurMatinApresMidi === 100) {
+      alertes.push({
+        type: 'CONTINUITE_CHAUFFEUR',
+        message: `✓ Règle respectée à 100% : la totalité des élèves (${nbElevesMemeChauffeur}/${nbElevesEligiblesContinuite}) ont exactement le même chauffeur le matin et l'après-midi.`,
+        severite: 'INFO',
+        details: { nbElevesMemeChauffeur, nbElevesEligiblesContinuite, taux: 100 },
+      });
+    } else {
+      alertes.push({
+        type: 'CONTINUITE_CHAUFFEUR',
+        message: `Règle même chauffeur respectée à ${tauxMemeChauffeurMatinApresMidi}% (${nbElevesMemeChauffeur}/${nbElevesEligiblesContinuite} élèves). ${nbElevesChauffeurDifferent} élève(s) avec chauffeur différent (rotations 'SANS' ou capacités maximales).`,
+        severite: 'INFO',
+        details: { nbElevesMemeChauffeur, nbElevesChauffeurDifferent, nbElevesEligiblesContinuite, taux: tauxMemeChauffeurMatinApresMidi },
+      });
+    }
+  }
+
   return {
     affectations,
     parChauffeur,
@@ -456,6 +1053,11 @@ export const construireResultatDepuisAffectations = (
       totalAffectations: affectations.length,
       elevesNonAffectes,
       alertes,
+      tauxMemeChauffeurMatinApresMidi,
+      nbElevesMemeChauffeur,
+      nbElevesChauffeurDifferent,
+      nbElevesEligiblesContinuite,
+      elevesContinuiteDetails,
     },
   };
 };
@@ -606,12 +1208,13 @@ export const interchangerElevesMemeZone = (
   const zoneA = (eleveA.zone || '').trim().toLowerCase();
   const zoneB = (eleveB.zone || '').trim().toLowerCase();
 
-  // VALIDATION STRICTE DE LA CONDITION DEMANDÉE : MÊME ZONE
-  if (zoneA !== zoneB) {
+  // VALIDATION STRICTE DE LA CONDITION : ZONES RESPECTÉES
+  const memeZone = zoneA === zoneB;
+  if (!memeZone) {
     return {
       succes: false,
       motif: 'DIFFERENT_ZONE',
-      message: `⛔ Interchange interdit : L'élève "${eleveA.nom} ${eleveA.prenom}" est en zone "${eleveA.zone.toUpperCase()}" tandis que "${eleveB.nom} ${eleveB.prenom}" est en zone "${eleveB.zone.toUpperCase()}". L'interchange par Drag & Drop exige impérativement que les deux élèves soient dans la MÊME ZONE.`,
+      message: `⛔ Interchange interdit : L'élève "${eleveA.nom} ${eleveA.prenom}" est en zone "${eleveA.zone.toUpperCase()}" tandis que "${eleveB.nom} ${eleveB.prenom}" est en zone "${eleveB.zone.toUpperCase()}". Les deux élèves doivent appartenir à la même zone pour être interchangés.`,
     };
   }
 
@@ -705,14 +1308,12 @@ export const deplacerEleveVersChauffeurMemeZone = (
     };
   }
 
-  const zoneEleve = (eleve.zone || '').trim().toLowerCase();
-  const zoneChauffeur = (destinationChauffeur.zone || '').trim().toLowerCase();
-
-  if (zoneEleve !== zoneChauffeur) {
+  if (!chauffeurDessertZonePourVoyage(destinationChauffeur, eleve.zone, voyageId)) {
+    const zonesDest = obtenirZonesVoyageChauffeur(destinationChauffeur, voyageId).map((z) => z.toUpperCase()).join(', ');
     return {
       succes: false,
       motif: 'DIFFERENT_ZONE',
-      message: `⛔ Déplacement interdit : L'élève "${eleve.nom}" est en zone "${eleve.zone.toUpperCase()}" alors que le bus de "${destinationChauffeur.nom}" dessert la zone "${destinationChauffeur.zone.toUpperCase()}".`,
+      message: `⛔ Déplacement interdit : L'élève "${eleve.nom}" est en zone "${eleve.zone.toUpperCase()}" alors que le voyage "${voyageId}" de "${destinationChauffeur.nom}" ne dessert que : [${zonesDest || 'AUCUNE ZONE'}].`,
     };
   }
 
@@ -1118,6 +1719,285 @@ export const ajusterNombreElevesDirect = (
   };
 };
 
+// ============================================================
+// AJUSTEMENT DIRECT PAR CURSEUR DE POURCENTAGE PAR VOYAGE
+// Modifie en temps réel le taux et le nombre d'élèves d'un voyage
+// ============================================================
+
+export interface ResultatAjustementPourcentage {
+  nouveauResultat: ResultatRepartition;
+  delta: number;
+  effectue: number;
+  message: string;
+}
+
+export const ajusterPourcentageVoyage = (
+  resultatActuel: ResultatRepartition,
+  eleves: Eleve[],
+  chauffeurs: Chauffeur[],
+  voyageId: string,
+  nouveauPourcentage: number,
+  emplacementsVerrouilles: Set<string> | string[] = new Set()
+): ResultatAjustementPourcentage => {
+  const setVerrouilles = new Set(emplacementsVerrouilles);
+  const chauffeursMap = new Map(chauffeurs.map((c) => [c.id, c]));
+
+  // Identifier les chauffeurs actifs pour ce voyage (ceux non 'SANS')
+  const chauffeursActifs = chauffeurs.filter((c) => !estVoyageSans(c, voyageId));
+  const placesMobilisees = chauffeursActifs.reduce((sum, c) => sum + (c.places || 0), 0);
+
+  if (placesMobilisees === 0) {
+    return {
+      nouveauResultat: resultatActuel,
+      delta: 0,
+      effectue: 0,
+      message: `Aucun transport actif disponible pour le voyage ${voyageId}.`,
+    };
+  }
+
+  // Taux cible entre 0% et 100%
+  const ciblePourcentageBorne = Math.max(0, Math.min(100, Math.round(nouveauPourcentage)));
+  const elevesCibles = Math.min(
+    placesMobilisees,
+    Math.max(0, Math.round((placesMobilisees * ciblePourcentageBorne) / 100))
+  );
+
+  let affectationsCourantes = [...resultatActuel.affectations];
+  const affsVoyage = affectationsCourantes.filter((a) => a.voyageId === voyageId);
+  const actuelTotal = affsVoyage.length;
+  const delta = elevesCibles - actuelTotal;
+
+  if (delta === 0) {
+    return {
+      nouveauResultat: resultatActuel,
+      delta: 0,
+      effectue: 0,
+      message: `Le voyage ${voyageId} est déjà calé sur ${ciblePourcentageBorne}% (${actuelTotal} élèves).`,
+    };
+  }
+
+  const isMatin = voyageId === 'MATIN_1' || voyageId === 'MATIN_2';
+  let effectue = 0;
+
+  if (delta < 0) {
+    // -------------------------------------------------------------
+    // RÉDUCTION DU NOMBRE D'ÉLÈVES SUR CE VOYAGE (delta < 0)
+    // -------------------------------------------------------------
+    const aRetirer = Math.abs(delta);
+
+    // Calcul de l'occupation actuelle par chauffeur sur ce voyage
+    const occupationParChauffeur = new Map<string, number>();
+    affsVoyage.forEach((a) => {
+      occupationParChauffeur.set(a.chauffeurId, (occupationParChauffeur.get(a.chauffeurId) || 0) + 1);
+    });
+
+    // Score de continuité : préserver en priorité absolue les élèves ayant le même chauffeur
+    const getScoreContinuite = (aff: AffectationEleve): number => {
+      if (isMatin) {
+        const affAprem = affectationsCourantes.find(
+          (a) => a.eleveId === aff.eleveId && (a.voyageId === 'APRES_MIDI_15H15' || a.voyageId === 'APRES_MIDI_16H00')
+        );
+        if (affAprem && affAprem.chauffeurId === aff.chauffeurId) return 10;
+        if (affAprem) return 4;
+        return 0;
+      } else {
+        const affMatin = affectationsCourantes.find(
+          (a) => a.eleveId === aff.eleveId && (a.voyageId === 'MATIN_1' || a.voyageId === 'MATIN_2')
+        );
+        if (affMatin && affMatin.chauffeurId === aff.chauffeurId) return 10;
+        if (affMatin) return 4;
+        return 0;
+      }
+    };
+
+    // Candidats au retrait (hors emplacements verrouillés)
+    const candidatsRetrait = affsVoyage.filter((aff) => {
+      const lockKey = `${aff.chauffeurId}_${voyageId}`;
+      return !setVerrouilles.has(lockKey);
+    });
+
+    // Trier les candidats au retrait :
+    // 1. Faible score de continuité en premier (supprimer les élèves sans continuité d'abord)
+    // 2. Chauffeur avec le taux de remplissage le plus élevé en premier (pour équilibrer la flotte)
+    candidatsRetrait.sort((a, b) => {
+      const scoreA = getScoreContinuite(a);
+      const scoreB = getScoreContinuite(b);
+      if (scoreA !== scoreB) return scoreA - scoreB;
+
+      const occA = occupationParChauffeur.get(a.chauffeurId) || 0;
+      const occB = occupationParChauffeur.get(b.chauffeurId) || 0;
+      const chA = chauffeursMap.get(a.chauffeurId);
+      const chB = chauffeursMap.get(b.chauffeurId);
+      const tauxA = chA && chA.places > 0 ? occA / chA.places : 0;
+      const tauxB = chB && chB.places > 0 ? occB / chB.places : 0;
+      return tauxB - tauxA;
+    });
+
+    const elevesIdsARetirer = new Set(
+      candidatsRetrait.slice(0, aRetirer).map((a) => a.eleveId)
+    );
+
+    effectue = elevesIdsARetirer.size;
+    affectationsCourantes = affectationsCourantes.filter(
+      (a) => !(a.voyageId === voyageId && elevesIdsARetirer.has(a.eleveId))
+    );
+  } else {
+    // -------------------------------------------------------------
+    // AUGMENTATION DU NOMBRE D'ÉLÈVES SUR CE VOYAGE (delta > 0)
+    // -------------------------------------------------------------
+    let aAjouter = delta;
+
+    // Déterminer les élèves qui sont déjà sur ce voyage
+    const elevesSurCeVoyage = new Set(affsVoyage.map((a) => a.eleveId));
+
+    // Si matin : élèves déjà pris sur l'autre voyage matin
+    const autreVoyageMatin = voyageId === 'MATIN_1' ? 'MATIN_2' : 'MATIN_1';
+    const elevesSurAutreMatin = new Set(
+      isMatin
+        ? affectationsCourantes.filter((a) => a.voyageId === autreVoyageMatin).map((a) => a.eleveId)
+        : []
+    );
+
+    // Niveau ciblé pour l'après-midi
+    const niveauRequis =
+      voyageId === 'APRES_MIDI_15H15' ? 1 : voyageId === 'APRES_MIDI_16H00' ? 2 : null;
+
+    // Capacité courante par chauffeur sur ce voyage
+    const placesOccupees = new Map<string, number>();
+    affsVoyage.forEach((a) => {
+      placesOccupees.set(a.chauffeurId, (placesOccupees.get(a.chauffeurId) || 0) + 1);
+    });
+
+    // Liste des candidats éligibles
+    const candidats = eleves.filter((e) => {
+      if (elevesSurCeVoyage.has(e.id)) return false;
+      if (isMatin && elevesSurAutreMatin.has(e.id)) return false;
+      if (niveauRequis !== null && e.niveau !== niveauRequis) return false;
+      return true;
+    });
+
+    // Trier les candidats pour privilégier ceux qui ont un chauffeur sur l'autre demi-journée
+    candidats.sort((a, b) => {
+      const affA = affectationsCourantes.find((x) => x.eleveId === a.id);
+      const affB = affectationsCourantes.find((x) => x.eleveId === b.id);
+      const aHas = affA ? 1 : 0;
+      const bHas = affB ? 1 : 0;
+      return bHas - aHas;
+    });
+
+    for (const eleve of candidats) {
+      if (aAjouter <= 0) break;
+
+      // Chauffeur déjà affecté sur l'autre voyage (priorité absolue continuité)
+      const affAutre = affectationsCourantes.find(
+        (x) =>
+          x.eleveId === eleve.id &&
+          (isMatin
+            ? x.voyageId === 'APRES_MIDI_15H15' || x.voyageId === 'APRES_MIDI_16H00'
+            : x.voyageId === 'MATIN_1' || x.voyageId === 'MATIN_2')
+      );
+      const chPrefereId = affAutre?.chauffeurId;
+
+      // Chauffeurs actifs pouvant accueillir cet élève
+      const chauffeursEligibles = chauffeursActifs.filter((c) => {
+        const lockKey = `${c.id}_${voyageId}`;
+        if (setVerrouilles.has(lockKey)) return false;
+
+        const occ = placesOccupees.get(c.id) || 0;
+        if (occ >= c.places) return false;
+
+        if (!chauffeurDessertZonePourVoyage(c, eleve.zone, voyageId)) return false;
+
+        const config = getConfigVoyage(c, voyageId);
+        const niveaux = extraireNiveaux(config);
+        if (isMatin && !niveaux.includes(eleve.niveau)) return false;
+
+        return true;
+      });
+
+      if (chauffeursEligibles.length === 0) continue;
+
+      // Trier les chauffeurs :
+      // 1. Chauffeur de continuité en premier
+      // 2. Chauffeur avec le plus de places disponibles restantes
+      chauffeursEligibles.sort((a, b) => {
+        if (chPrefereId) {
+          const aIsPref = a.id === chPrefereId ? 100 : 0;
+          const bIsPref = b.id === chPrefereId ? 100 : 0;
+          if (aIsPref !== bIsPref) return bIsPref - aIsPref;
+        }
+
+        const occA = placesOccupees.get(a.id) || 0;
+        const occB = placesOccupees.get(b.id) || 0;
+        const remA = a.places - occA;
+        const remB = b.places - occB;
+        return remB - remA;
+      });
+
+      const chauffeurChoisi = chauffeursEligibles[0];
+      affectationsCourantes.push({
+        eleveId: eleve.id,
+        chauffeurId: chauffeurChoisi.id,
+        voyageId,
+      });
+
+      placesOccupees.set(chauffeurChoisi.id, (placesOccupees.get(chauffeurChoisi.id) || 0) + 1);
+      aAjouter--;
+      effectue++;
+    }
+  }
+
+  // Post-optimisation de continuité après ajustement
+  const affectationsOptimisees = optimiserContinuiteMatinApresMidi(
+    affectationsCourantes,
+    eleves,
+    chauffeurs,
+    setVerrouilles
+  );
+
+  const nouveauResultat = construireResultatDepuisAffectations(
+    eleves,
+    chauffeurs,
+    affectationsOptimisees
+  );
+
+  const libelleVoyage = VOYAGES.find((v) => v.id === voyageId)?.libelle || voyageId;
+  const nouveauTotal = nouveauResultat.parVoyage[voyageId]?.totalEleves || 0;
+  const nouveauTaux = Math.round((nouveauTotal / (placesMobilisees || 1)) * 100);
+
+  return {
+    nouveauResultat,
+    delta,
+    effectue,
+    message: `✓ Voyage ${libelleVoyage} : ajusté à ${nouveauTaux}% (${nouveauTotal} élèves sur ${placesMobilisees} places mobilisées).`,
+  };
+};
+
+export const ajusterTousPourcentagesVoyages = (
+  resultatActuel: ResultatRepartition,
+  eleves: Eleve[],
+  chauffeurs: Chauffeur[],
+  pourcentagesCibles: Record<string, number>,
+  emplacementsVerrouilles: Set<string> | string[] = new Set()
+): ResultatRepartition => {
+  let res = resultatActuel;
+  for (const v of VOYAGES) {
+    const cible = pourcentagesCibles[v.id];
+    if (typeof cible === 'number') {
+      const ajust = ajusterPourcentageVoyage(
+        res,
+        eleves,
+        chauffeurs,
+        v.id,
+        cible,
+        emplacementsVerrouilles
+      );
+      res = ajust.nouveauResultat;
+    }
+  }
+  return res;
+};
+
 // Auto-équilibrer intelligemment les taux de remplissage pour éliminer les taux de 50%
 // Les chauffeurs et emplacements verrouillés sont protégés et ne subissent aucun transfert
 export const autoEquilibrerTaux = (
@@ -1191,7 +2071,14 @@ export const autoEquilibrerTaux = (
                 (a) => a.chauffeurId === donateur.chauffeur.id && a.voyageId === voyageId
               );
 
-              const aDeplacer = affsDonateur.slice(-transfertPossible);
+              // Filtrer uniquement les élèves que le receveur a le droit de prendre (selon ses zones sur ce voyage)
+              const affsCompatibles = affsDonateur.filter((a) => {
+                const el = eleves.find((e) => e.id === a.eleveId);
+                return el && chauffeurDessertZonePourVoyage(receveur.chauffeur, el.zone, voyageId);
+              });
+
+              const aDeplacer = affsCompatibles.slice(-transfertPossible);
+              if (aDeplacer.length === 0) return;
               const idsADeplacer = new Set(aDeplacer.map((a) => a.eleveId));
 
               affectationsCourantes = affectationsCourantes.map((aff) => {
@@ -1205,10 +2092,10 @@ export const autoEquilibrerTaux = (
                 return aff;
               });
 
-              donateur.nb -= transfertPossible;
-              receveur.nb += transfertPossible;
-              receveur.dispo -= transfertPossible;
-              totalDeplaces += transfertPossible;
+              donateur.nb -= aDeplacer.length;
+              receveur.nb += aDeplacer.length;
+              receveur.dispo -= aDeplacer.length;
+              totalDeplaces += aDeplacer.length;
             }
           }
         });

@@ -15,7 +15,7 @@ import {
   Filter
 } from 'lucide-react';
 import { Chauffeur, Eleve, ResultatRepartition } from '../types';
-import { VOYAGES, TransfertOptions } from '../utils/repartition';
+import { VOYAGES, TransfertOptions, obtenirZonesChauffeur, obtenirZonesVoyageChauffeur } from '../utils/repartition';
 import { Badge } from './ui/badge';
 
 interface AjustementAffectationsModalProps {
@@ -64,9 +64,10 @@ export const AjustementAffectationsModal: React.FC<AjustementAffectationsModalPr
     const source = chauffeurs.find((c) => c.id === sourceChauffeurId);
     if (!source) return;
 
-    // Trouver un chauffeur de la même zone avec un taux plus faible ou de la place
+    // Trouver un chauffeur compatible (partageant au moins une zone commune sur ce voyage) avec un taux plus faible ou de la place
+    const zonesSource = obtenirZonesVoyageChauffeur(source, selectedVoyageId);
     const memeZone = chauffeurs.filter(
-      (c) => c.id !== sourceChauffeurId && c.zone?.toLowerCase() === source.zone?.toLowerCase()
+      (c) => c.id !== sourceChauffeurId && obtenirZonesVoyageChauffeur(c, selectedVoyageId).some((z) => zonesSource.includes(z))
     );
     if (memeZone.length > 0) {
       // Prioriser celui qui a le moins d'élèves sur ce voyage
@@ -258,9 +259,10 @@ export const AjustementAffectationsModal: React.FC<AjustementAffectationsModalPr
                     : isSlotLocked
                     ? '🔒 [CRÉNEAU FIGÉ] '
                     : '';
+                  const zonesStr = obtenirZonesVoyageChauffeur(c, selectedVoyageId).map(z => z.toUpperCase()).join(', ');
                   return (
                     <option key={c.id} value={c.id}>
-                      {lockPrefix}{c.nom} ({c.zone}) - {nb} élève(s) sur ce voyage - Taux {taux}%
+                      {lockPrefix}{c.nom} [{zonesStr || 'AUCUNE'}] - {nb} élève(s) sur ce voyage - Taux {taux}%
                     </option>
                   );
                 })}
@@ -268,7 +270,7 @@ export const AjustementAffectationsModal: React.FC<AjustementAffectationsModalPr
 
               {sourceChauffeur && (
                 <div className="text-xs text-rose-900/80 flex items-center justify-between pt-1">
-                  <span>Zone : <strong>{sourceChauffeur.zone}</strong></span>
+                  <span>Zones créneau : <strong>{obtenirZonesVoyageChauffeur(sourceChauffeur, selectedVoyageId).map(z => z.toUpperCase()).join(', ') || 'Aucune'}</strong></span>
                   <span>Capacité : <strong>{sourceChauffeur.places} places</strong></span>
                 </div>
               )}
@@ -299,9 +301,9 @@ export const AjustementAffectationsModal: React.FC<AjustementAffectationsModalPr
                     const nb = stat?.voyages[selectedVoyageId]?.placesUtilisees || 0;
                     const dispo = Math.max(0, c.places - nb);
                     const taux = Math.round((stat?.tauxGlobal || 0) * 100);
-                    const memeZone =
-                      sourceChauffeur &&
-                      c.zone?.toLowerCase() === sourceChauffeur.zone?.toLowerCase();
+                    const zonesC = obtenirZonesVoyageChauffeur(c, selectedVoyageId);
+                    const zonesSrc = obtenirZonesVoyageChauffeur(sourceChauffeur, selectedVoyageId);
+                    const memeZone = zonesC.some((z) => zonesSrc.includes(z));
                     const isChLocked = chauffeurIdsVerrouilles?.has(c.id);
                     const isSlotLocked = emplacementsVerrouilles?.has(`${c.id}_${selectedVoyageId}`);
                     const lockPrefix = isChLocked
@@ -309,9 +311,10 @@ export const AjustementAffectationsModal: React.FC<AjustementAffectationsModalPr
                       : isSlotLocked
                       ? '🔒 [CRÉNEAU FIGÉ] '
                       : '';
+                    const zonesStr = zonesC.map(z => z.toUpperCase()).join(', ');
                     return (
                       <option key={c.id} value={c.id}>
-                        {lockPrefix}{c.nom} ({c.zone}) {memeZone ? '★ Même zone' : ''} - Actuel: {nb}/{c.places} ({dispo} libres) - Taux {taux}%
+                        {lockPrefix}{c.nom} [{zonesStr || 'AUCUNE'}] {memeZone ? '★ Compatible' : ''} - Actuel: {nb}/{c.places} ({dispo} libres) - Taux {taux}%
                       </option>
                     );
                   })}
@@ -319,7 +322,7 @@ export const AjustementAffectationsModal: React.FC<AjustementAffectationsModalPr
 
               {destChauffeur && (
                 <div className="text-xs text-emerald-900/80 flex items-center justify-between pt-1">
-                  <span>Zone : <strong>{destChauffeur.zone}</strong></span>
+                  <span>Zones créneau : <strong>{obtenirZonesVoyageChauffeur(destChauffeur, selectedVoyageId).map(z => z.toUpperCase()).join(', ') || 'Aucune'}</strong></span>
                   <span>Places libres : <strong>{Math.max(0, destChauffeur.places - destNbVoyageActuel)}</strong></span>
                 </div>
               )}

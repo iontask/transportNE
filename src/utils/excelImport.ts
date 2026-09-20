@@ -210,15 +210,48 @@ export const importerChauffeurs = async (
         return;
       }
 
+      const normalizedZone = normaliserZone(zone);
+      const optM1 = normaliserOptionVoyage(matin1Index >= 0 ? row[matin1Index] : 'SANS');
+      const optM2 = normaliserOptionVoyage(matin2Index >= 0 ? row[matin2Index] : 'SANS');
+      const opt15 = normaliserOptionVoyage(apresMidi15h15Index >= 0 ? row[apresMidi15h15Index] : 'SANS');
+      const opt16 = normaliserOptionVoyage(apresMidi16h00Index >= 0 ? row[apresMidi16h00Index] : 'SANS');
+
+      const origM1 = optM1.includes('AIN SEBAA') ? 'ain sebaa' : normalizedZone;
+      const origM2 = optM2.includes('AIN SEBAA') ? 'ain sebaa' : normalizedZone;
+      const orig15 = opt15.includes('AIN SEBAA') ? 'ain sebaa' : normalizedZone;
+      const orig16 = opt16.includes('AIN SEBAA') ? 'ain sebaa' : normalizedZone;
+
       chauffeurs.push({
         id: generateId(),
         nom,
-        zone: normaliserZone(zone),
+        zone: normalizedZone,
+        zoneOriginale: normalizedZone,
         places,
-        voyageMatin1: normaliserOptionVoyage(matin1Index >= 0 ? row[matin1Index] : 'SANS'),
-        voyageMatin2: normaliserOptionVoyage(matin2Index >= 0 ? row[matin2Index] : 'SANS'),
-        voyageApresMidi15h15: normaliserOptionVoyage(apresMidi15h15Index >= 0 ? row[apresMidi15h15Index] : 'SANS'),
-        voyageApresMidi16h00: normaliserOptionVoyage(apresMidi16h00Index >= 0 ? row[apresMidi16h00Index] : 'SANS'),
+        voyageMatin1: optM1,
+        voyageMatin2: optM2,
+        voyageApresMidi15h15: opt15,
+        voyageApresMidi16h00: opt16,
+        zoneOriginaleVoyageMatin1: origM1,
+        zoneOriginaleVoyageMatin2: origM2,
+        zoneOriginaleVoyageApresMidi15h15: orig15,
+        zoneOriginaleVoyageApresMidi16h00: orig16,
+        zonesOriginalesParVoyage: {
+          'MATIN_1': origM1,
+          'MATIN_2': origM2,
+          'APRES_MIDI_15H15': orig15,
+          'APRES_MIDI_16H00': orig16,
+        },
+        zonesVoyageMatin1: [origM1],
+        zonesVoyageMatin2: [origM2],
+        zonesVoyageApresMidi15h15: [orig15],
+        zonesVoyageApresMidi16h00: [orig16],
+        zonesParVoyage: {
+          'MATIN_1': [origM1],
+          'MATIN_2': [origM2],
+          'APRES_MIDI_15H15': [orig15],
+          'APRES_MIDI_16H00': [orig16],
+        },
+        zones: Array.from(new Set([origM1, origM2, orig15, orig16])),
       });
     });
 

@@ -28,6 +28,8 @@ import {
   transfererEleves, 
   autoEquilibrerTaux,
   ajusterNombreElevesDirect,
+  ajusterPourcentageVoyage,
+  ajusterTousPourcentagesVoyages,
   VOYAGES,
   TransfertOptions,
   getStatsOptimisationVoyage
@@ -43,15 +45,22 @@ import {
   AlertCircle,
   Lock,
   Unlock,
-  FileJson
+  FileJson,
+  ShieldCheck,
+  Eye,
+  Repeat
 } from 'lucide-react';
 import { AjustementAffectationsModal } from '../components/AjustementAffectationsModal';
 import { CelluleSaisieVoyage } from '../components/CelluleSaisieVoyage';
 import { AtelierInterchangeDragDrop } from '../components/AtelierInterchangeDragDrop';
 import { ModalImpressionRapport } from '../components/ModalImpressionRapport';
 import { ModalConfigurationJSON } from '../components/ModalConfigurationJSON';
+import { ModalSolutionsIANonAffectes } from '../components/ModalSolutionsIANonAffectes';
+import { ModalContinuiteDetails } from '../components/ModalContinuiteDetails';
 import { exporterRapportRecapitulatifPDF } from '../utils/pdfExport';
 import { ConfigurationTransportJSON } from '../utils/configurationJson';
+import { SolutionIANonAffectes, genererSolutionsIANonAffectes } from '../utils/solutionsIANonAffectes';
+import { optimiserContinuiteMatinApresMidi, construireResultatDepuisAffectations } from '../utils/repartition';
 
 interface RepartitionPageProps {
   eleves: Eleve[];
@@ -61,6 +70,7 @@ interface RepartitionPageProps {
   onNavigateToImport: () => void;
   onNavigateToListesChauffeur?: () => void;
   onNavigateToListesVoyage?: () => void;
+  onUpdateChauffeurs?: (chauffeurs: Chauffeur[]) => void;
   chauffeursVerrouilles?: Set<string>;
   emplacementsVerrouilles?: Set<string>;
   onToggleVerrouillerChauffeur?: (chauffeurId: string) => void;
@@ -82,6 +92,7 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
   onNavigateToImport,
   onNavigateToListesChauffeur,
   onNavigateToListesVoyage,
+  onUpdateChauffeurs,
   onNavigateToOptimisationIA,
   scenarioActifNom,
   onAnnulerDernierScenario,
@@ -116,10 +127,156 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
   // Option : verrouiller automatiquement un emplacement lors de la saisie d'un chiffre
   const [autoVerrouillerApresSaisie, setAutoVerrouillerApresSaisie] = useState<boolean>(true);
 
-  // Modales d'impression et de configuration JSON
+  // Modales d'impression, configuration JSON et Solutions IA
   const [isModalImpressionOpen, setIsModalImpressionOpen] = useState<boolean>(false);
   const [isModalConfigOpen, setIsModalConfigOpen] = useState<boolean>(false);
+  const [isModalSolutionsIAOpen, setIsModalSolutionsIAOpen] = useState<boolean>(false);
+  const [isModalContinuiteOpen, setIsModalContinuiteOpen] = useState<boolean>(false);
+  const [isAppliquantSolutionDirecte, setIsAppliquantSolutionDirecte] = useState<boolean>(false);
   const [isExportingRapportDirectPDF, setIsExportingRapportDirectPDF] = useState<boolean>(false);
+
+  // Pourcentages manuels ajustables par voyage via curseurs
+  const [pourcentagesVoyages, setPourcentagesVoyages] = useState<Record<string, number>>({
+    MATIN_1: 100,
+    MATIN_2: 100,
+    APRES_MIDI_15H15: 100,
+    APRES_MIDI_16H00: 100,
+  });
+
+  // Synchroniser les curseurs avec le résultat courant
+  useEffect(() => {
+    if (resultat?.parVoyage) {
+      setPourcentagesVoyages((prev) => {
+        const next = { ...prev };
+        let modif = false;
+        VOYAGES.forEach((v) => {
+          const stats = getStatsOptimisationVoyage(resultat.parVoyage[v.id]);
+          if (next[v.id] === undefined) {
+            next[v.id] = stats.tauxOptimisation || 100;
+            modif = true;
+          }
+        });
+        return modif ? next : prev;
+      });
+    }
+  }, [resultat]);
+
+  // Handler pour changer manuellement le curseur de pourcentage d'un voyage et impacter directement la répartition
+  const handleAjusterPourcentageVoyage = (voyageId: string, nouveauPourcentage: number) => {
+    if (!resultat) return;
+    const pct = Math.max(10, Math.min(100, Math.round(nouveauPourcentage)));
+
+    // Sauvegarder dans l'historique pour pouvoir annuler
+    setHistorique((prev) => [...prev.slice(-9), resultat]);
+
+    setPourcentagesVoyages((prev) => ({
+      ...prev,
+      [voyageId]: pct,
+    }));
+
+    const res = ajusterPourcentageVoyage(
+      resultat,
+      eleves,
+      chauffeurs,
+      voyageId,
+      pct,
+      emplacementsVerrouilles
+    );
+
+    onResultat(res.nouveauResultat);
+    afficherFlash(res.message, 'success');
+  };
+
+  // Passer tous les voyages à 100% de potentiel
+  const handleAppliquerPleinPotentiel100 = () => {
+    if (!resultat) return;
+    setHistorique((prev) => [...prev.slice(-9), resultat]);
+
+    const pourcentages100: Record<string, number> = {
+      MATIN_1: 100,
+      MATIN_2: 100,
+      APRES_MIDI_15H15: 100,
+      APRES_MIDI_16H00: 100,
+    };
+    setPourcentagesVoyages(pourcentages100);
+
+    const nouveauResultat = ajusterTousPourcentagesVoyages(
+      resultat,
+      eleves,
+      chauffeurs,
+      pourcentages100,
+      emplacementsVerrouilles
+    );
+
+    onResultat(nouveauResultat);
+    afficherFlash('⚡ Plein potentiel appliqué (100% sur les 4 voyages) !', 'success');
+  };
+
+  // Ré-optimisation de la règle "Même chauffeur matin & après-midi"
+  const handleOptimiserContinuite = () => {
+    if (!resultat) return;
+    setHistorique((prev) => [...prev.slice(-9), resultat]);
+    const affectationsOptimisees = optimiserContinuiteMatinApresMidi(
+      resultat.affectations,
+      eleves,
+      chauffeurs,
+      emplacementsVerrouilles
+    );
+    const alertesSansContinuite = resultat.statistiques.alertes.filter(a => a.type !== 'CONTINUITE_CHAUFFEUR');
+    const nouveauResultat = construireResultatDepuisAffectations(
+      eleves,
+      chauffeurs,
+      affectationsOptimisees,
+      alertesSansContinuite
+    );
+    onResultat(nouveauResultat);
+    afficherFlash(
+      `✓ Continuité optimisée : ${nouveauResultat.statistiques.tauxMemeChauffeurMatinApresMidi}% des élèves ont le même chauffeur matin et après-midi !`,
+      'success'
+    );
+  };
+
+  // Application d'une solution IA pour les élèves non affectés
+  const handleAppliquerSolutionIA = (solution: SolutionIANonAffectes) => {
+    if (!resultat) return;
+    setHistorique((prev) => [...prev.slice(-9), resultat]);
+
+    // 1. Mettre à jour les chauffeurs pour persister les zones et créneaux modifiés
+    if (onUpdateChauffeurs && solution.nouveauxChauffeurs) {
+      onUpdateChauffeurs(solution.nouveauxChauffeurs);
+    }
+
+    // 2. Mettre à jour les affectations de répartition
+    onResultat(solution.nouveauResultat);
+
+    // 3. Notification utilisateur
+    afficherFlash(
+      `✨ Solution IA « ${solution.titre} » appliquée avec succès ! ${solution.nbElevesResolus} élève(s) pris en charge.`,
+      'success'
+    );
+
+    setIsModalSolutionsIAOpen(false);
+  };
+
+  // Application directe en 1 clic de la solution recommandée
+  const handleAppliquerSolutionDirecte = () => {
+    if (!resultat) return;
+    setIsAppliquantSolutionDirecte(true);
+    try {
+      const solutions = genererSolutionsIANonAffectes(eleves, chauffeurs, resultat);
+      if (solutions.length > 0) {
+        const meilleure = solutions[0];
+        handleAppliquerSolutionIA(meilleure);
+      } else {
+        afficherFlash('Aucun ajustement supplémentaire nécessaire.', 'info');
+      }
+    } catch (err) {
+      console.error('Erreur lors de l’application directe IA:', err);
+      afficherFlash('Une erreur est survenue lors du calcul de la solution IA.', 'info');
+    } finally {
+      setIsAppliquantSolutionDirecte(false);
+    }
+  };
 
   const handleExportRapportDirectPDF = async () => {
     if (!resultat) return;
@@ -282,11 +439,11 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
     }
   };
 
-  const lancerRepartition = () => {
+  const lancerRepartition = (cibles?: Record<string, number>) => {
     setIsLoading(true);
     // Court délai fluide pour l'expérience utilisateur
     setTimeout(() => {
-      const res = repartir(eleves, chauffeurs);
+      const res = repartir(eleves, chauffeurs, cibles ? { pourcentagesCibles: cibles } : undefined);
       setHistorique([]);
       onResultat(res);
       // Verrouiller initialement les cellules "SANS" avec 0 au compteur d'affectation
@@ -297,7 +454,7 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
         setLocalEmplacementsVerrouilles(sansLocks);
       }
       setIsLoading(false);
-      afficherFlash('Répartition initiale calculée avec succès (cellules SANS verrouillées à 0)', 'success');
+      afficherFlash('Répartition calculée avec succès (cellules SANS verrouillées à 0)', 'success');
     }, 350);
   };
 
@@ -567,7 +724,7 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
             <button
               id="btn-lancer-repartition"
               type="button"
-              onClick={lancerRepartition}
+              onClick={() => lancerRepartition()}
               disabled={isLoading}
               className="px-7 py-3.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-3 text-sm sm:text-base shadow-md shadow-blue-500/25 transition-all cursor-pointer transform active:scale-95"
             >
@@ -593,6 +750,82 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
           {/* Résultats de la répartition */}
           {resultat && (
             <div className="space-y-8 animate-fadeIn">
+              {/* BANNIÈRE PROBLÈME ÉLÈVES NON AFFECTÉS & SOLUTIONS IA */}
+              {resultat.statistiques.elevesNonAffectes.length > 0 && (
+                <div className="relative overflow-hidden bg-gradient-to-r from-rose-50 via-amber-50 to-orange-50 border-2 border-rose-300/90 rounded-2xl p-5 sm:p-6 shadow-md shadow-rose-100/50 space-y-4">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3.5">
+                      <div className="w-11 h-11 rounded-2xl bg-rose-600 text-white flex items-center justify-center shrink-0 shadow-md shadow-rose-600/30 mt-0.5">
+                        <AlertTriangle className="w-6 h-6 text-white" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-base sm:text-lg font-black text-rose-950 tracking-tight">
+                            Problème détecté : {resultat.statistiques.elevesNonAffectes.length} élève{resultat.statistiques.elevesNonAffectes.length > 1 ? 's' : ''} non affecté{resultat.statistiques.elevesNonAffectes.length > 1 ? 's' : ''}
+                          </h3>
+                          <span className="px-2.5 py-0.5 rounded-full bg-rose-200 text-rose-900 text-xs font-black font-mono tracking-wide uppercase">
+                            Résolution IA requise
+                          </span>
+                        </div>
+                        <p className="text-xs sm:text-sm text-rose-800 leading-relaxed max-w-2xl">
+                          Certains élèves n'ont pas pu être pris en charge lors de la répartition standard (zones non desservies ou saturation locale). L'intelligence artificielle a calculé des stratégies de déblocage garantissant <strong>100% de prise en charge</strong>.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 shrink-0 self-start lg:self-center">
+                      <button
+                        id="btn-solutions-ia"
+                        type="button"
+                        onClick={() => setIsModalSolutionsIAOpen(true)}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 via-indigo-600 to-blue-600 hover:from-purple-700 hover:to-indigo-700 text-white rounded-xl text-xs sm:text-sm font-black shadow-md hover:shadow-lg transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98]"
+                        title="Ouvrir la modale comparative des solutions IA proposées"
+                      >
+                        <Sparkles className="w-4 h-4 text-amber-300 animate-pulse" />
+                        <span>SOLUTIONS IA</span>
+                      </button>
+
+                      <button
+                        id="btn-appliquer-solution-ia"
+                        type="button"
+                        onClick={handleAppliquerSolutionDirecte}
+                        disabled={isAppliquantSolutionDirecte}
+                        className="inline-flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl text-xs sm:text-sm font-black shadow-md hover:shadow-lg transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Appliquer automatiquement la meilleure solution IA recommandée pour affecter tous les élèves"
+                      >
+                        {isAppliquantSolutionDirecte ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <CheckCircle2 className="w-4 h-4 text-white" />
+                        )}
+                        <span>APPLIQUER UNE DES SOLUTIONS</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Liste miniature des élèves en attente avec leurs zones */}
+                  <div className="pt-3 border-t border-rose-200/80 flex flex-wrap items-center gap-2 text-xs">
+                    <span className="font-bold text-rose-950 shrink-0">Élèves concernés :</span>
+                    {resultat.statistiques.elevesNonAffectes.slice(0, 10).map((el) => (
+                      <span
+                        key={el.id}
+                        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/90 border border-rose-200 text-rose-900 font-medium shadow-2xs"
+                      >
+                        <span className="font-bold">{el.prenom} {el.nom}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold uppercase tracking-wider font-mono">
+                          {el.zone} (N{el.niveau})
+                        </span>
+                      </span>
+                    ))}
+                    {resultat.statistiques.elevesNonAffectes.length > 10 && (
+                      <span className="text-xs text-rose-700 font-bold italic ml-1">
+                        +{resultat.statistiques.elevesNonAffectes.length - 10} autre(s)...
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Alertes & Diagnostics */}
               {resultat.statistiques.alertes.length > 0 && (
                 <div className="space-y-3">
@@ -649,7 +882,7 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
               )}
 
               {/* Statistiques clés post-répartition */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <StatCard
                   title="Élèves affectés"
                   value={resultat.statistiques.totalAffectations}
@@ -667,7 +900,70 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                   }
                   icon={AlertTriangle}
                   color={resultat.statistiques.elevesNonAffectes.length > 0 ? 'red' : 'green'}
-                />
+                >
+                  {resultat.statistiques.elevesNonAffectes.length > 0 && (
+                    <div className="flex items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIsModalSolutionsIAOpen(true)}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-purple-100 hover:bg-purple-200 text-purple-900 text-xs font-bold transition-colors cursor-pointer"
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-purple-700" />
+                        Solutions IA
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleAppliquerSolutionDirecte}
+                        disabled={isAppliquantSolutionDirecte}
+                        className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        {isAppliquantSolutionDirecte ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Check className="w-3.5 h-3.5" />
+                        )}
+                        Appliquer
+                      </button>
+                    </div>
+                  )}
+                </StatCard>
+                <StatCard
+                  title="Même chauffeur matin & soir"
+                  value={`${resultat.statistiques.tauxMemeChauffeurMatinApresMidi ?? 100}%`}
+                  subtitle={
+                    resultat.statistiques.nbElevesEligiblesContinuite
+                      ? `${resultat.statistiques.nbElevesMemeChauffeur ?? 0}/${resultat.statistiques.nbElevesEligiblesContinuite} élèves respectés`
+                      : 'Continuité respectée'
+                  }
+                  icon={ShieldCheck}
+                  color={
+                    (resultat.statistiques.tauxMemeChauffeurMatinApresMidi ?? 100) >= 90
+                      ? 'green'
+                      : (resultat.statistiques.tauxMemeChauffeurMatinApresMidi ?? 100) >= 70
+                      ? 'blue'
+                      : 'orange'
+                  }
+                >
+                  <div className="flex items-center gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsModalContinuiteOpen(true)}
+                      className="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-800 text-[11px] font-bold transition-colors cursor-pointer"
+                    >
+                      <Eye className="w-3 h-3 text-blue-600" />
+                      Détails
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOptimiserContinuite}
+                      className="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 text-[11px] font-bold transition-colors cursor-pointer"
+                      title="Réoptimiser la continuité pour maximiser le même chauffeur"
+                    >
+                      <Repeat className="w-3 h-3 text-slate-600" />
+                      Optimiser
+                    </button>
+                  </div>
+                </StatCard>
                 <StatCard
                   title="Taux de remplissage global"
                   value={`${Math.round(
@@ -750,22 +1046,40 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                 </div>
               </div>
 
-              {/* Taux d'Optimisation en Pourcentage par Voyage (Transports Utilisés vs Places) */}
+              {/* Taux d'Optimisation en Pourcentage par Voyage (Transports Utilisés vs Places) & Curseurs Manuels */}
               <div className="bg-white rounded-2xl border border-slate-200/90 p-5 shadow-xs space-y-4">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
                   <div>
                     <h3 className="font-bold text-slate-900 text-sm sm:text-base flex items-center gap-2">
                       <Zap className="w-4 h-4 text-amber-500 fill-amber-500" />
-                      <span>Taux d'optimisation par voyage</span>
+                      <span>Taux d'optimisation par voyage & Curseurs manuels</span>
                     </h3>
                     <p className="text-xs text-slate-500 mt-0.5">
-                      Calcul en pourcentage : (Nombre d'élèves transportés) ÷ (Nombre total de places des transports utilisés)
+                      Déplacez les curseurs ci-dessous pour modifier manuellement le pourcentage de chaque voyage et impacter directement la répartition.
                     </p>
                   </div>
-                  <div className="flex items-center gap-1.5 self-start sm:self-auto">
+                  <div className="flex items-center flex-wrap gap-1.5 self-start sm:self-auto">
                     <span className="text-[11px] font-semibold text-slate-600 bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200">
                       Flotte : {chauffeurs.length} bus ({chauffeurs.reduce((s, c) => s + c.places, 0)} pl.)
                     </span>
+                    <button
+                      type="button"
+                      onClick={handleAppliquerPleinPotentiel100}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-2xs"
+                      title="Régler les 4 voyages à 100% de potentiel maximal"
+                    >
+                      <Zap className="w-3.5 h-3.5 fill-white" />
+                      <span>Tous à 100%</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => lancerRepartition(pourcentagesVoyages)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors cursor-pointer shadow-2xs"
+                      title="Régénérer toute la répartition à partir des 4 pourcentages cibles actuels"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Régénérer aux cibles</span>
+                    </button>
                   </div>
                 </div>
 
@@ -774,11 +1088,16 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                     const stats = getStatsOptimisationVoyage(resultat.parVoyage[v.id]);
                     const isHigh = stats.tauxOptimisation >= 80;
                     const isMedium = stats.tauxOptimisation >= 50;
+                    const pctCible = pourcentagesVoyages[v.id] ?? stats.tauxOptimisation;
+                    const elevesCibles = Math.min(
+                      stats.placesTransportsUtilises,
+                      Math.max(0, Math.round((stats.placesTransportsUtilises * pctCible) / 100))
+                    );
 
                     return (
                       <div
                         key={v.id}
-                        className="bg-slate-50/70 hover:bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3 transition-colors"
+                        className="bg-slate-50/70 hover:bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3 transition-colors shadow-2xs"
                       >
                         {/* En-tête de la carte */}
                         <div className="flex items-center justify-between gap-1">
@@ -786,20 +1105,93 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                             <span className="text-xs font-bold text-slate-900 block truncate">{v.libelle}</span>
                             <span className="text-[10px] font-medium text-slate-500">{v.heure}</span>
                           </div>
-                          <span
-                            className={`px-2 py-0.5 rounded-md text-xs font-black font-mono shrink-0 border ${
-                              isHigh
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                : isMedium
-                                ? 'bg-blue-50 text-blue-700 border-blue-200'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                            }`}
-                          >
-                            {stats.tauxOptimisation}%
-                          </span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-xs font-black font-mono border ${
+                                isHigh
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : isMedium
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                  : 'bg-amber-50 text-amber-700 border-amber-200'
+                              }`}
+                              title="Taux réel calculé"
+                            >
+                              {stats.tauxOptimisation}%
+                            </span>
+                          </div>
                         </div>
 
-                        {/* Jauge visuelle */}
+                        {/* SECTION CURSEUR INTERACTIF */}
+                        <div className="bg-white rounded-xl p-2.5 border border-slate-200/90 shadow-2xs space-y-2">
+                          <div className="flex items-center justify-between gap-1">
+                            <label
+                              htmlFor={`curseur-voyage-${v.id}`}
+                              className="text-[11px] font-bold text-slate-700 flex items-center gap-1 cursor-pointer"
+                            >
+                              <Sliders className="w-3 h-3 text-blue-600 shrink-0" />
+                              <span>Curseur cible :</span>
+                            </label>
+                            <span className="text-[11px] font-extrabold font-mono text-blue-700 bg-blue-50 px-1.5 py-0.5 rounded border border-blue-200">
+                              {pctCible}%
+                            </span>
+                          </div>
+
+                          {/* Curseur de réglage */}
+                          <div className="space-y-1">
+                            <input
+                              id={`curseur-voyage-${v.id}`}
+                              type="range"
+                              min={10}
+                              max={100}
+                              step={1}
+                              value={pctCible}
+                              onChange={(e) => handleAjusterPourcentageVoyage(v.id, Number(e.target.value))}
+                              className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:accent-blue-700 transition-all"
+                              title={`Glisser pour ajuster le pourcentage de ${v.libelle} (actuellement ${pctCible}%)`}
+                            />
+                            <div className="flex justify-between items-center text-[9.5px] text-slate-400 font-medium px-0.5">
+                              <span>10% min</span>
+                              <span className="text-slate-600 font-bold font-mono">
+                                Cible : ~{elevesCibles} él.
+                              </span>
+                              <span>100% max</span>
+                            </div>
+                          </div>
+
+                          {/* Boutons d'ajustement fin rapide (-5% / +5% / Max 100%) */}
+                          <div className="grid grid-cols-3 gap-1 pt-0.5">
+                            <button
+                              type="button"
+                              onClick={() => handleAjusterPourcentageVoyage(v.id, Math.max(10, pctCible - 5))}
+                              className="px-1.5 py-1 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md border border-slate-200 transition-colors flex items-center justify-center gap-0.5 cursor-pointer"
+                              title="Diminuer de 5%"
+                            >
+                              <Minus className="w-2.5 h-2.5" /> 5%
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAjusterPourcentageVoyage(v.id, Math.min(100, pctCible + 5))}
+                              className="px-1.5 py-1 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-md border border-slate-200 transition-colors flex items-center justify-center gap-0.5 cursor-pointer"
+                              title="Augmenter de 5%"
+                            >
+                              <Plus className="w-2.5 h-2.5" /> 5%
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAjusterPourcentageVoyage(v.id, 100)}
+                              className={`px-1.5 py-1 text-[10px] font-bold rounded-md border transition-colors flex items-center justify-center gap-0.5 cursor-pointer ${
+                                pctCible === 100
+                                  ? 'bg-blue-600 text-white border-blue-700'
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                              }`}
+                              title="Régler à 100% (capacité maximale)"
+                            >
+                              Max 100%
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Jauge visuelle de résultat réel */}
                         <div className="space-y-1">
                           <div className="w-full bg-slate-200/80 rounded-full h-2 overflow-hidden">
                             <div
@@ -815,7 +1207,9 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                           </div>
                           <div className="flex justify-between items-center text-[10px] text-slate-400 font-medium px-0.5">
                             <span>0%</span>
-                            <span>{stats.tauxOptimisation}% optimisé</span>
+                            <span className="font-semibold text-slate-700">
+                              {stats.tauxOptimisation}% optimisé
+                            </span>
                             <span>100%</span>
                           </div>
                         </div>
@@ -1641,6 +2035,28 @@ export const RepartitionPage: React.FC<RepartitionPageProps> = ({
                   afficherFlash(`✓ Configuration JSON appliquée (${cfg.eleves.length} élèves, ${cfg.chauffeurs.length} chauffeurs).`, 'success');
                 }}
               />
+
+              {/* Modal Solutions IA pour élèves non affectés */}
+              {resultat && (
+                <ModalSolutionsIANonAffectes
+                  isOpen={isModalSolutionsIAOpen}
+                  onClose={() => setIsModalSolutionsIAOpen(false)}
+                  eleves={eleves}
+                  chauffeurs={chauffeurs}
+                  resultat={resultat}
+                  onAppliquerSolution={handleAppliquerSolutionIA}
+                />
+              )}
+
+              {/* Modal Détails & Respect Continuité Même Chauffeur Matin/Soir */}
+              {resultat && (
+                <ModalContinuiteDetails
+                  isOpen={isModalContinuiteOpen}
+                  onClose={() => setIsModalContinuiteOpen(false)}
+                  resultat={resultat}
+                  onOptimiserContinuite={handleOptimiserContinuite}
+                />
+              )}
             </div>
           )}
         </>

@@ -8,6 +8,7 @@ interface StatCardProps {
   icon: LucideIcon;
   color?: 'blue' | 'green' | 'orange' | 'red' | 'purple';
   subtitle?: string;
+  children?: React.ReactNode;
 }
 
 const colorClasses = {
@@ -33,11 +34,12 @@ export const StatCard: React.FC<StatCardProps> = ({
   icon: Icon,
   color = 'blue',
   subtitle,
+  children,
 }) => {
   return (
     <div
       id={id}
-      className={`rounded-xl border p-5 transition-shadow hover:shadow-sm ${colorClasses[color]} bg-white shadow-xs`}
+      className={`rounded-xl border p-5 transition-shadow hover:shadow-sm ${colorClasses[color]} bg-white shadow-xs flex flex-col justify-between`}
     >
       <div className="flex items-start justify-between">
         <div>
@@ -51,6 +53,9 @@ export const StatCard: React.FC<StatCardProps> = ({
           <Icon className="w-6 h-6" />
         </div>
       </div>
+      {children && (
+        <div className="mt-3 pt-2.5 border-t border-gray-100">{children}</div>
+      )}
     </div>
   );
 };

@@ -176,6 +176,7 @@ export default function App() {
           chauffeurs={chauffeurs}
           resultat={resultat}
           onResultat={handleResultat}
+          onUpdateChauffeurs={setChauffeurs}
           onNavigateToImport={() => setActiveTab('import')}
           onNavigateToListesChauffeur={() => setActiveTab('listes-chauffeur')}
           onNavigateToListesVoyage={() => setActiveTab('listes-voyage')}
@@ -242,6 +243,7 @@ export default function App() {
       {activeTab === 'chauffeurs' && (
         <ChauffeursPage
           chauffeurs={chauffeurs}
+          eleves={eleves}
           chauffeursInitiaux={chauffeursInitiaux}
           onUpdateChauffeur={handleUpdateSingleChauffeur}
           onUpdateChauffeurs={handleUpdateChauffeurs}
